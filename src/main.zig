@@ -42,25 +42,24 @@ pub fn main(init: std.process.Init) !void {
 
     switch (command) {
         .help => try printHelp(init),
-        .version => try printHelp(
-            init,
-        ),
+        .version => try printVersion(init),
         .workspace => try startWorkspace(init),
     }
+}
+
+pub fn printVersion(init: std.process.Init) !void {
+    try writeOutput(
+        init.io,
+        "ZIM version {s}\n",
+        .{version},
+    );
 }
 
 pub fn printHelp(init: std.process.Init) !void {
     const cwd = try std.process.currentPathAlloc(init.io, init.gpa);
     defer init.gpa.free(cwd);
 
-    var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writer(
-        init.io,
-        &stdout_buffer,
-    );
-
-    const stdout = &stdout_writer.interface;
-    try stdout.print(
+    const help_template =
         \\
         \\ZIM - {s} - YOUR NEW CODE OVERLORD 
         \\
@@ -72,9 +71,13 @@ pub fn printHelp(init: std.process.Init) !void {
         \\[STARTING]    Operation Impending Build 
         \\[READY]       Commence coding
         \\
-    , .{ version, cwd });
+    ;
 
-    try stdout.flush();
+    try writeOutput(
+        init.io,
+        help_template,
+        .{ version, cwd },
+    );
 }
 
 pub fn startWorkspace(init: std.process.Init) !void {
