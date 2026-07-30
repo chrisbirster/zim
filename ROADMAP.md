@@ -209,8 +209,8 @@ zim/
 * [x] Initialize the Zig project
 * [x] Add Zim startup output
 * [x] Resolve the current workspace path
-* [ ] Parse `zim .` and other CLI arguments
-* [ ] Add version and help commands
+* [x] Parse `zim .` and other CLI arguments
+* [x] Add version and help commands
 
 ### Phase 1: Local server
 
