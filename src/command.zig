@@ -1,5 +1,4 @@
 const std = @import("std");
-const root = @import("root.zig");
 
 pub const ParseError = error{
     InvalidCommand,
@@ -10,24 +9,37 @@ pub const Command = union(enum) {
     help,
     workspace: []const u8,
 
-    pub fn parse(s: []const u8) ParseError!Command {
-        if (std.mem.eql(u8, s, "--version")) {
+    pub fn parse(value: []const u8) ParseError!Command {
+        if (value.len == 0) {
+            return ParseError.InvalidCommand;
+        }
+
+        if (std.mem.eql(u8, value, "-v") or std.mem.eql(u8, value, "--version")) {
             return .version;
         }
 
-        if (std.mem.eql(u8, s, "-h") or std.mem.eql(u8, s, "--help")) {
+        if (std.mem.eql(u8, value, "-h") or std.mem.eql(u8, value, "--help")) {
             return .help;
         }
 
         // Reject other -[opts] besides the --help or --version.
-        if (std.mem.startsWith(u8, s, "-")) {
+        if (std.mem.startsWith(u8, value, "-")) {
             return ParseError.InvalidCommand;
         }
 
         // assuming any other string is a workspace path
-        return .{ .workspace = s };
+        return .{ .workspace = value };
     }
 };
+
+test "parse -v" {
+    const command = try Command.parse("-v");
+
+    try std.testing.expectEqual(
+        Command.version,
+        command,
+    );
+}
 
 test "parse --version" {
     const command = try Command.parse("--version");
@@ -113,5 +125,12 @@ test "reject unknown option" {
     try std.testing.expectError(
         error.InvalidCommand,
         Command.parse("--unknown"),
+    );
+}
+
+test "reject empty workspace path" {
+    try std.testing.expectError(
+        error.InvalidCommand,
+        Command.parse(""),
     );
 }
