@@ -1,0 +1,48 @@
+name: Validate Codeberg sync
+
+on:
+  push:
+    branches:
+      - sync/codeberg-upstream-2026-08-28
+    paths:
+      - .github/workflows/validate-codeberg-sync.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sync branch
+        uses: actions/checkout@v4
+
+      - name: Install Zig 0.16.0
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Check formatting
+        run: zig fmt --check src build.zig
+
+      - name: Build
+        run: zig build
+
+      - name: Test
+        run: zig build test
+
+      - name: Remove one-shot validation workflow
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/validate-codeberg-sync.yml
+          find .github -type d -empty -delete 2>/dev/null || true
+          git add -A
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "chore: remove one-shot sync validation"
+          git push origin HEAD:sync/codeberg-upstream-2026-08-28
