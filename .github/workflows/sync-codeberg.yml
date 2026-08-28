@@ -1,0 +1,47 @@
+name: One-shot Codeberg sync
+
+on:
+  push:
+    branches:
+      - sync/codeberg-upstream-2026-08-28
+    paths:
+      - .github/workflows/sync-codeberg.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout GitHub branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch current Codeberg source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          git clone --depth 1 https://codeberg.org/chrisdontmiss/zim.git "$tmp/upstream"
+          rsync -a --delete \
+            --exclude='.git' \
+            --exclude='.github/workflows/sync-codeberg.yml' \
+            "$tmp/upstream/" "$GITHUB_WORKSPACE/"
+          rm -f .github/workflows/sync-codeberg.yml
+          find .github -type d -empty -delete 2>/dev/null || true
+
+      - name: Commit exact upstream delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No Codeberg changes to sync."
+            exit 0
+          fi
+          git commit -m "Sync current Codeberg upstream"
+          git push origin HEAD:sync/codeberg-upstream-2026-08-28
