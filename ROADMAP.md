@@ -1,266 +1,232 @@
-# Roadmap
+# Zim Roadmap
 
-Roadmap for the zim editor. 
+This roadmap tracks the path from the current bootstrap executable to a genuinely usable local-first editor.
 
-## Vision
+The canonical repository is **https://github.com/chrisbirster/zim**.
 
-Zim will be distributed as a single executable:
+## North star
 
-```text
-zim
-```
-
-The executable will contain:
-
-```text
-┌──────────────────────────────────────────────┐
-│ Zim                                          │
-│                                              │
-│ Zig editor core                              │
-│ RPC server                                   │
-│ Workspace and document management            │
-│ Language-server management                   │
-│ Terminal and task management                 │
-│ Embedded SolidJS frontend UI                 │
-└──────────────────────────────────────────────┘
-```
-
-Starting Zim inside a project will launch the local editor server and open the embedded frontend:
+The first product milestone is simple to describe:
 
 ```bash
 zim .
 ```
 
-Conceptually:
+opens a fast graphical editor for the current repository where a developer can browse files, open a text file, edit it, save it, run a project task, see language diagnostics, close Zim, and return to the same session.
 
-```text
-SolidJS frontend
-       │
-       │ JSON-RPC over WebSocket
-       ▼
-Zig editor core
-       │
-       ├── Workspace
-       ├── Documents
-       ├── Commands
-       ├── Language servers
-       ├── Terminals
-       ├── Build tasks
-       └── Plugins
-```
+That is the first useful Zim.
 
-The Zig process will own the authoritative editor state. The SolidJS application will render that state and send semantic editor commands through Remote Proceedure Call (RPC).
+## Current state
 
-## Why Zim?
+Today Zim has:
 
-Many editors combine the editor engine, rendering system, plugins, and user interface into one tightly coupled application.
+- [x] Zig project/bootstrap
+- [x] native executable
+- [x] startup identity/banner
+- [x] current-working-directory resolution
+- [x] accepted core architecture principles
+- [x] mission/product architecture documentation
 
-Zim will separate these concerns:
+It does **not** yet have a real CLI parser, local server, RPC implementation, frontend, workspace model, document model, editor UI, terminal, task runner, or LSP integration.
 
-* Zig owns editor state and system access.
-* SolidJS owns the graphical interface.
-* RPC connects the two.
-* External clients can use the same RPC protocol.
-* The complete application is shipped as one binary.
+## Milestone 0 — Foundation
 
-This architecture should eventually allow Zim to support:
+**Goal:** turn the bootstrap into a testable application skeleton.
 
-```text
-Browser interface  ─┐
-Desktop wrapper     ├── Zim RPC ── Editor core
-Command-line client ┤
-External plugins   ─┘
-```
+- [ ] Define `App` startup/shutdown orchestration
+- [ ] Add CLI argument parsing
+- [ ] Implement `zim .`
+- [ ] Implement `zim <path>`
+- [ ] Add `zim --help`
+- [ ] Add `zim --version`
+- [ ] Normalize and validate workspace paths
+- [ ] Introduce stable application errors and exit codes
+- [ ] Add unit tests for CLI/workspace resolution
+- [ ] Add GitHub Actions for format, build, and tests on supported platforms
 
-## Planned commands
+**Exit condition:** Zim has a reliable command-line entrypoint and CI can prove it builds/tests from a clean checkout.
 
-```bash
-zim .
-zim path/to/project
-zim src/main.zig
-zim open src/main.zig
-zim status
-zim sessions
-zim doctor
-zim stop
-zim version
-```
+## Milestone 1 — Core + RPC heartbeat
 
-The initial command is:
+**Goal:** prove that Zim can host an authoritative editor core and communicate with a client.
 
-```bash
-zim .
-```
+- [ ] Create the core application state
+- [ ] Add a local HTTP server bound to loopback
+- [ ] Add `/health`
+- [ ] Add a WebSocket endpoint
+- [ ] Implement JSON-RPC 2.0 request/response framing
+- [ ] Implement protocol error handling
+- [ ] Add `system.hello`
+- [ ] Report `applicationVersion`, `protocolVersion`, session ID, and capabilities
+- [ ] Add server lifecycle/shutdown tests
+- [ ] Add an integration test that connects and completes the handshake
 
-This tells Zim to use the current directory as its workspace.
+**Exit condition:** a headless client can start Zim, connect, call `system.hello`, and shut the process down cleanly.
 
-## Planned RPC API
+## Milestone 2 — First-party SolidJS client
 
-Zim will begin with JSON-RPC 2.0 over WebSockets.
+**Goal:** establish the graphical shell without moving editor authority into the frontend.
 
-Example request:
+- [ ] Create `web/` with SolidJS + TypeScript + Vite
+- [ ] Build a typed RPC client
+- [ ] Connect/reconnect to the local Zim server
+- [ ] Display connection state
+- [ ] Display current workspace identity
+- [ ] Establish basic layout: activity/sidebar/editor/panel/status
+- [ ] Add development mode with Vite HMR
+- [ ] Add production frontend build
+- [ ] Serve production assets from Zim
+- [ ] Package/embed the built UI with the application
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "system.hello",
-  "params": {}
-}
-```
+**Exit condition:** `zim .` can open the first-party GUI and the GUI is reading real state from the Zig process through RPC.
 
-Example response:
+## Milestone 3 — Workspace browser
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "name": "Zim",
-    "version": "0.1.0",
-    "protocolVersion": 1
-  }
-}
-```
+**Goal:** make a repository navigable.
 
-Planned method groups include:
+- [ ] Add `WorkspaceId` and workspace state
+- [ ] Implement workspace tree enumeration
+- [ ] Add ignore handling
+- [ ] Add `workspace.get`
+- [ ] Add `workspace.listFiles`
+- [ ] Add filesystem watching
+- [ ] Emit `workspace.filesChanged`
+- [ ] Render the file tree in SolidJS
+- [ ] Add create/rename/delete operations after read-only browsing is stable
+- [ ] Add integration tests against temporary workspaces
 
-```text
-system.*
-session.*
-workspace.*
-document.*
-command.*
-language.*
-terminal.*
-task.*
-git.*
-plugin.*
-```
+**Exit condition:** Zim can display and incrementally update the file tree of a real repository.
 
-## Planned frontend
+## Milestone 4 — Editing vertical slice
 
-The graphical interface will be built with:
+**Goal:** become a real text editor.
 
-* SolidJS
-* TypeScript
-* ViteJS
-* CodeMirror
-* WebSockets
-* An embedded production build
+- [ ] Define `DocumentId`
+- [ ] Define the document state/revision model
+- [ ] Implement `document.open`
+- [ ] Implement `document.applyEdits`
+- [ ] Implement `document.save`
+- [ ] Track dirty/saved revisions
+- [ ] Detect external file modifications
+- [ ] Emit document lifecycle events
+- [ ] Integrate CodeMirror in the SolidJS client
+- [ ] Add tabs/open-document UI
+- [ ] Add keyboard save
+- [ ] Add safe conflict behavior for external changes
+- [ ] Add end-to-end open → edit → save tests
 
-During development, ViteJS will provide hot module replacement.
+**Exit condition:** a developer can browse to a file, edit it, save it, and trust that Zim's Zig core owns the authoritative document state.
 
-For production, the frontend will be compiled and embedded into the Zig executable.
+## Milestone 5 — Development loop
 
-```text
-SolidJS source
-      │
-      ▼
-Vite build
-      │
-      ▼
-ui/dist/index.html
-      │
-      ▼
-Zig @embedFile
-      │
-      ▼
-Single Zim executable
-```
+**Goal:** make Zim useful for actual project work rather than only text editing.
 
-## Current project structure
+### Tasks
 
-```text
-zim/
-├── build.zig
-├── build.zig.zon
-└── src/
-    ├── main.zig
-    └── root.zig
-```
+- [ ] Define `TaskId`
+- [ ] Run a command in the workspace
+- [ ] Stream stdout/stderr
+- [ ] Emit task status/output events
+- [ ] Display task output in the UI
+- [ ] Add cancellation
 
-The project will gradually expand toward:
+### Language intelligence
 
-```text
-zim/
-├── src/
-│   ├── main.zig
-│   ├── cli/
-│   ├── editor/
-│   ├── rpc/
-│   ├── server/
-│   ├── workspace/
-│   ├── language/
-│   ├── terminal/
-│   ├── task/
-│   ├── git/
-│   └── plugin/
-├── web/
-│   └── src/
-├── protocol/
-└── tests/
-```
+- [ ] Spawn one configured language server
+- [ ] Implement LSP initialization
+- [ ] Synchronize document open/change/save
+- [ ] Surface diagnostics through Zim RPC
+- [ ] Render diagnostics in the editor
+- [ ] Add hover
+- [ ] Add go-to-definition
+- [ ] Add completion after lifecycle/diagnostics are reliable
 
-## Roadmap
+**Exit condition:** a developer can edit code, run the project's build/test command, and see real language diagnostics without leaving Zim.
 
-### Phase 0: Bootstrap
+## Milestone 6 — Sessions and terminal
 
-* [x] Initialize the Zig project
-* [x] Add Zim startup output
-* [x] Resolve the current workspace path
-* [ ] Parse `zim .` and other CLI arguments
-* [ ] Add version and help commands
+**Goal:** make Zim feel persistent and complete enough for daily use.
 
-### Phase 1: Local server
+### Sessions
 
-* [ ] Start a local HTTP server
-* [ ] Add a health endpoint
-* [ ] Serve an embedded HTML page
-* [ ] Add a WebSocket endpoint
-* [ ] Implement `system.hello`
+- [ ] Define `SessionId`
+- [ ] Persist workspace/session metadata
+- [ ] Restore open documents
+- [ ] Restore active document
+- [ ] Persist minimal layout state where useful
+- [ ] Version the session format
 
-### Phase 2: SolidJS interface
+### Terminal
 
-* [ ] Create the SolidJS application
-* [ ] Connect to Zim over WebSocket
-* [ ] Display connection and workspace state
-* [ ] Embed the production frontend
-* [ ] Ship the frontend inside the Zig binary
+- [ ] Add PTY abstraction
+- [ ] Start interactive shells
+- [ ] Stream terminal output
+- [ ] Send terminal input/resize
+- [ ] Render an integrated terminal client
+- [ ] Clean up child processes reliably
 
-### Phase 3: Workspace
+**Exit condition:** closing and reopening Zim restores useful context, and normal command-line work can happen inside the editor.
 
-* [ ] List workspace files
-* [ ] Read files
-* [ ] Create files and directories
-* [ ] Rename and delete files
-* [ ] Watch for external filesystem changes
-* [ ] Respect ignore files
+## Milestone 7 — Daily-driver editor
 
-### Phase 4: Editing
+**Goal:** close the obvious gaps that keep a developer from using Zim on a real repository every day.
 
-* [ ] Integrate CodeMirror
-* [ ] Open documents
-* [ ] Apply revisioned edits
-* [ ] Save documents
-* [ ] Add dirty-state tracking
-* [ ] Add undo and redo
-* [ ] Support multiple tabs
+- [ ] command palette
+- [ ] quick file search
+- [ ] project text search
+- [ ] multi-cursor/editor ergonomics through CodeMirror
+- [ ] Git status/diff basics
+- [ ] configurable keybindings
+- [ ] user/workspace settings
+- [ ] themes
+- [ ] crash-safe document/session recovery
+- [ ] performance benchmarks
+- [ ] packaging/installers for supported platforms
 
-### Phase 5: Development tools
+**Exit condition:** Zim can be used as the primary editor for a small-to-medium real project without constantly falling back to another editor.
 
-* [ ] Run build commands
-* [ ] Stream task output
-* [ ] Add an integrated terminal
-* [ ] Start language servers
-* [ ] Display diagnostics
-* [ ] Add completion and go-to-definition
+## Milestone 8 — Platform
 
-### Phase 6: Editor platform
+**Goal:** make the editor core useful beyond the built-in GUI.
 
-* [ ] Add command registration
-* [ ] Add Unix-domain socket support
-* [ ] Support persistent sessions
-* [ ] Add external RPC plugins
-* [ ] Add plugin permissions
-* [ ] Generate Zig and TypeScript protocol types
+Do this only after the daily-driver loop is healthy.
+
+- [ ] semantic command registry
+- [ ] capability discovery
+- [ ] generated Zig/TypeScript protocol types
+- [ ] Unix-domain socket transport
+- [ ] CLI client for an existing session
+- [ ] plugin protocol
+- [ ] plugin capability/permission model
+- [ ] external plugins
+- [ ] multi-client session behavior
+- [ ] optional remote/browser access with explicit authentication
+
+## Immediate next 10 engineering steps
+
+These are intentionally ordered. Each should leave the repository in a working state.
+
+1. **Create `src/app/` orchestration** — move startup responsibility out of `main.zig` so the process entrypoint stays tiny.
+2. **Implement CLI parsing** — support `zim .`, `zim <path>`, `--help`, and `--version` without designing a giant command framework.
+3. **Create the workspace value type** — canonical path, identity, validation, and tests.
+4. **Add CI** — `zig fmt --check` equivalent, build, and tests on Linux/macOS/Windows where Zig support permits.
+5. **Introduce protocol version types** — establish `applicationVersion` and `protocolVersion = 1` before RPC expands.
+6. **Start the loopback HTTP server** — health endpoint only.
+7. **Add WebSocket + JSON-RPC framing** — transport and parsing, without editor methods yet.
+8. **Implement `system.hello`** — first end-to-end semantic RPC method.
+9. **Create the SolidJS/Vite client shell** — connection state and workspace name only.
+10. **Wire `zim .` to launch the GUI path** — the first complete executable → server → RPC → client vertical slice.
+
+After step 10, stop and evaluate architecture/performance before beginning the workspace browser.
+
+## Engineering rules for roadmap work
+
+- Every milestone should have a headless integration test where practical.
+- Keep the Zig core usable without the SolidJS client.
+- Do not expose arbitrary filesystem/process access through RPC.
+- Prefer semantic state/events over frontend-specific APIs.
+- Add module directories as code lands, not as empty scaffolding.
+- Avoid premature editor-buffer optimization; measure first.
+- Do not build a plugin system before the editing/development loop works.
+- Do not make AI or cloud services dependencies of the core editor.
+- Keep `main` releasable/buildable; substantial work should land through focused branches/PRs.
