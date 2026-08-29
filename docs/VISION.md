@@ -4,22 +4,22 @@
 
 **Zim exists to make modal, local software development feel immediate again.**
 
-Zim is a Neovim-class programmer's editor rebuilt around Zig: fast to start, terminal-native, deeply programmable, usable headlessly, and architected so the editor engine is more important than any particular UI.
+Zim is a Neovim-class programmer's editor rebuilt around Zig: fast to start, terminal-native, deeply programmable, usable headlessly, and intentionally focused on the terminal as the complete editing experience.
 
 ## Purpose
 
 Zim is for developers who want:
 
 - a fast native modal editor
-- a terminal-first workflow
+- a terminal-only workflow
 - a small core that can be understood and modified
 - composable Vim-style editing semantics
 - Lua configuration and plugins
 - LSP, syntax parsing, jobs, terminals, search, and Git around one editor state
-- a stable API for automation and external clients
-- no required cloud account, browser runtime, Electron shell, or JavaScript toolchain
+- a stable API for automation and external plugins
+- no required cloud account, browser runtime, graphical shell, Electron, or JavaScript toolchain
 
-The goal is not to copy every Neovim implementation detail. The goal is to preserve the architectural fundamentals that make Neovim powerful while taking advantage of Zig to build a smaller, modern implementation.
+The goal is not to copy every Neovim implementation detail. The goal is to preserve the architectural fundamentals that make Neovim powerful while using Zig to build a smaller, modern implementation.
 
 ## Product promise
 
@@ -29,7 +29,7 @@ Eventually:
 zim src/main.zig
 ```
 
-should immediately enter a capable modal editor.
+should immediately enter a capable modal terminal editor.
 
 And:
 
@@ -37,9 +37,9 @@ And:
 zim --headless
 ```
 
-should expose the same editor engine for automation and testing without starting a UI.
+should expose the same editor engine for automation and testing without initializing the TUI.
 
-The editor should remain useful offline and should not require any graphical client.
+There is no planned GUI mode. The terminal is the product interface.
 
 ## Core beliefs
 
@@ -49,13 +49,15 @@ Buffers, windows, modes, commands, keymaps, undo history, marks, diagnostics, jo
 
 The TUI displays and manipulates that state; it does not define the editor model.
 
-### 2. The first UI is pure Zig
+### 2. The user interface is the terminal
 
-The first useful Zim is a terminal editor implemented in Zig. The built-in TUI calls the core directly and does not pay an RPC or serialization cost for ordinary editing.
+Zim is terminal-only by design. The TUI is not a temporary frontend and is not a stepping stone toward a graphical application.
+
+This keeps Zim focused on startup speed, keyboard-driven interaction, remote-shell friendliness, composability with terminal workflows, and a small native runtime.
 
 ### 3. Modal editing is fundamental
 
-Normal, Insert, Visual, operator-pending, command-line, motions, operators, counts, and text objects are core editor semantics.
+Normal, Insert, Visual, Operator Pending, Command Line, motions, operators, counts, and text objects are core editor semantics.
 
 They should compose rather than become a long list of special-case key handlers.
 
@@ -63,11 +65,11 @@ They should compose rather than become a long list of special-case key handlers.
 
 A buffer owns text and editing state. A window is a view onto a buffer. A tab page owns a window layout.
 
-This separation should remain true in the TUI and in any future external GUI.
+This separation is part of the editor model even though Zim has only one built-in terminal UI.
 
 ### 5. One public editor API
 
-Built-in features, Lua plugins, headless automation, external plugins, and future UIs should converge on the same stable editor concepts and API surface.
+Built-in features, Lua plugins, headless automation, and external plugins should converge on the same stable editor concepts and API surface.
 
 Internal Zig code may call implementation functions directly, but extension-facing behavior should not require a parallel editor model.
 
@@ -77,17 +79,15 @@ Zim should support `init.lua` configuration and embedded Lua plugins.
 
 Lua plugins should be able to register commands, keymaps, events/autocommands, diagnostics/decorations, and other capabilities through the public Zim API.
 
-The exact Lua runtime implementation is an engineering choice; plugin APIs should avoid depending on runtime-specific quirks.
+### 7. MessagePack-RPC is for extension, not rendering
 
-### 7. MessagePack-RPC is the external boundary
+Remote plugins, automation tools, and embedding/headless control communicate with Zim using MessagePack-RPC.
 
-Remote plugins, automation tools, embedding hosts, and future external UIs should communicate with Zim using MessagePack-RPC.
-
-The built-in TUI and embedded Lua do not need to serialize calls through RPC.
+The TUI and embedded Lua do not serialize ordinary editor interactions through RPC.
 
 ### 8. Headless is first-class
 
-The editor should be able to run without a terminal UI. This enables integration testing, scripted editing, CI use, remote plugins, and future clients without creating a second core.
+The editor can run without initializing terminal rendering. This enables integration testing, scripted editing, CI use, remote plugins, and automation without creating a second core.
 
 ### 9. Small beats magical
 
@@ -105,29 +105,29 @@ Zim is:
 
 - a modal programmer's editor
 - a Zig application
-- a terminal-first editor
+- a terminal-only editor
 - a buffer/window/mode/command engine
 - a Lua-configurable and Lua-extensible environment
-- a host for LSP, jobs, terminals, parsing, and development tools
+- a host for LSP, jobs, PTYs, parsing, search, and development tools
 - a headless automation engine
-- a MessagePack-RPC server for remote plugins and clients
-- eventually capable of supporting optional graphical UIs
+- a MessagePack-RPC server for remote plugins and automation clients
 
 ## What Zim is not
 
-Through the early releases, Zim is not trying to be:
+Zim is not trying to be:
 
 - a Neovim fork
 - byte-for-byte or API-compatible with Neovim
 - a VS Code clone
-- a GUI-first editor
+- a GUI editor
+- a WebView application
 - an Electron application
+- a browser editor
 - a cloud IDE
-- a browser-owned editor engine
 - a plugin marketplace
 - an AI product whose editor depends on a remote model
 
-Compatibility layers can be considered later if they create enough value without compromising the core design.
+SolidJS, if used by the project, belongs to the separate documentation website and not to Zim itself.
 
 ## First useful Zim
 
@@ -152,11 +152,10 @@ Zim succeeds when:
 
 - developers can use it as a daily terminal editor
 - its modal grammar feels coherent rather than approximated
+- the TUI remains fast and robust over SSH, tmux, local terminals, and different platforms
 - Lua is sufficient for normal configuration/plugin development
 - external plugins can be written without linking into the Zim process
 - headless tests exercise the same editor semantics used interactively
-- the TUI can evolve without rewriting buffer/editing semantics
-- an optional GUI could attach later without becoming a second editor implementation
 - the codebase stays substantially easier to understand than the systems it replaces
 
 ## Personality
