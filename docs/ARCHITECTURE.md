@@ -2,377 +2,517 @@
 
 ## Architectural thesis
 
-Zim is a Zig editor core with a versioned semantic protocol and one or more clients.
+Zim is a Neovim-class editor implemented in Zig.
 
-The first-party client is a SolidJS graphical application. It is intentionally not the source of truth for editor state.
-
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                         Clients                             │
-│                                                             │
-│  SolidJS GUI      CLI / automation      future plugins      │
-└───────────────────────────┬─────────────────────────────────┘
-                            │
-                    versioned semantic RPC
-                            │
-┌───────────────────────────▼─────────────────────────────────┐
-│                         Zim Core                            │
-│                                                             │
-│  sessions   workspaces   documents   commands              │
-│  search     LSP          terminals   tasks      git         │
-│                                                             │
-│             events + authoritative state                    │
-└───────────────────────────┬─────────────────────────────────┘
-                            │
-┌───────────────────────────▼─────────────────────────────────┐
-│                    Operating system                         │
-│                                                             │
-│  filesystem   processes   PTYs   sockets   watchers         │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Ownership rules
-
-### Zig core owns
-
-- workspace identity and roots
-- filesystem access
-- open-document buffers
-- document revisions and dirty state
-- save operations
-- command dispatch
-- search operations
-- language-server processes and protocol state
-- terminals and pseudoterminals
-- build/task processes and output
-- session persistence
-- Git subprocess/integration state
-- plugin permissions and host capabilities when plugins arrive
-
-### SolidJS client owns
-
-- layout
-- panels and tabs
-- visual editor presentation
-- menus, command palette, dialogs, and notifications
-- keyboard/mouse interaction mapping
-- client-local ephemeral UI state
-- rendering RPC state/events to the screen
-
-### Protocol owns the contract
-
-The protocol is the boundary between product semantics and presentation. A feature is not fully designed until its command, result, state, and event model are clear.
-
-## Core process model
-
-The initial implementation should use one Zim process per active session/workspace.
-
-That process hosts:
-
-1. the editor core
-2. the local RPC server
-3. the embedded static frontend server
-4. child processes such as language servers and task commands
-5. session persistence
-
-Later, Zim can add a lightweight session broker if multiple persistent sessions need to survive independently. The first MVP should not require a daemon.
-
-## Recommended module boundaries
+The built-in terminal UI is the first client, but unlike an external client it lives in the same process and talks to the editor core through direct Zig APIs. External plugins, automation tools, embedding hosts, and future UIs use the public editor API over MessagePack-RPC.
 
 ```text
-src/
-├── main.zig              # process entrypoint
-├── cli/                  # argument parsing and top-level commands
-├── app/                  # startup/shutdown orchestration
-├── session/              # session identity and persistence
-├── workspace/            # roots, tree, ignore rules, watching
-├── document/             # buffers, revisions, edits, save/dirty state
-├── command/              # semantic command registry/dispatch
-├── rpc/                  # protocol framing, request routing, events
-├── server/               # HTTP/WebSocket transport and asset serving
-├── search/               # file/text search
-├── language/             # LSP lifecycle and translation
-├── terminal/             # PTY/process ownership
-├── task/                 # project/build task execution
-├── git/                  # repository status and operations
-└── platform/             # OS-specific adapters
-
-web/
-├── src/
-│   ├── app/
-│   ├── rpc/
-│   ├── workspace/
-│   ├── editor/
-│   ├── terminal/
-│   └── components/
-└── dist/                 # generated production assets
-
-protocol/
-├── schema/               # protocol source definitions
-└── generated/            # generated Zig/TypeScript types later
-
-tests/
-├── unit/
-├── integration/
-└── protocol/
+                     ┌──────────────────────┐
+                     │       Zig TUI        │
+                     └──────────┬───────────┘
+                                │ direct Zig calls
+                                ▼
+┌──────────────────────────────────────────────────────────────┐
+│                         Zim Core                             │
+│                                                              │
+│ buffers   windows   tabpages   modes   keymaps   commands    │
+│ undo      marks     extmarks   events  options   registers   │
+│ search    syntax    LSP        jobs    PTYs      diagnostics │
+└─────────────────┬───────────────────────────────┬────────────┘
+                  │                               │
+          direct public API                 MessagePack-RPC
+                  │                               │
+             embedded Lua              ┌──────────┼───────────┐
+                                       │          │           │
+                                  remote      automation   future UI
+                                  plugins       clients
 ```
 
-These directories should be introduced only as real features land; avoid creating empty architecture for its own sake.
+A future SolidJS/WebView GUI is permitted, but it is an optional external UI and must not change the editor's core architecture.
 
-## Application state model
+## Process model
 
-The core should expose stable IDs rather than pointers or UI-derived identities.
+The default interactive editor is one native process:
+
+```text
+zim
+├── editor core
+├── Zig TUI
+├── embedded Lua runtime
+├── optional MessagePack-RPC endpoints
+└── child processes
+    ├── language servers
+    ├── jobs/tasks
+    └── PTYs
+```
+
+No HTTP server, browser runtime, WebSocket server, Node.js process, or GUI framework is required to run the editor.
+
+Headless mode starts the same core without the TUI.
+
+## Fundamental editor model
+
+### Buffer
+
+A buffer owns editable text and text-related state.
+
+Conceptually:
+
+```text
+Buffer
+├── id
+├── name/path
+├── text storage
+├── changed tick / revision
+├── modified state
+├── undo history
+├── marks/extmarks
+├── options
+└── attachments/listeners
+```
+
+The initial text representation should be intentionally simple—likely line-oriented storage or another straightforward representation. Rope/piece-table complexity should be added only after benchmarks demonstrate a real need.
+
+### Window
+
+A window is a view onto a buffer.
+
+It owns view-specific state such as:
+
+- cursor
+- viewport/scroll position
+- local options
+- dimensions
+- folds/view decorations later
+
+Multiple windows may display the same buffer.
+
+### Tab page
+
+A tab page owns a layout of windows. A tab is not synonymous with a file.
+
+Split layouts should be representable as a tree so horizontal/vertical splits remain independent of terminal coordinates.
+
+### Editor
+
+The top-level editor state owns:
+
+```text
+Editor
+├── buffers
+├── windows
+├── tabpages
+├── current window
+├── current mode
+├── command state
+├── registers
+├── global options
+├── event/autocmd registry
+├── Lua host
+├── jobs/terminals
+├── LSP clients
+└── RPC channels
+```
+
+## Modal command architecture
+
+Zim should model Vim-style editing as composable semantics rather than hard-coded key sequences.
+
+Core concepts include:
+
+```text
+count
+operator
+motion
+text object
+mode
+register
+```
 
 Examples:
 
 ```text
-SessionId
-WorkspaceId
-DocumentId
-TerminalId
-TaskId
-LanguageServerId
+3dw
+count=3 operator=delete motion=word
+
+ci"
+operator=change text-object=inside-quotes
 ```
 
-A client should be able to disconnect and reconnect, request a snapshot, and reconstruct its presentation without depending on in-memory frontend object identity.
+Normal, Insert, Visual, Visual Line, Visual Block, Operator Pending, and Command Line modes should be explicit editor state.
 
-## Document model
+The keymap layer maps input sequences to semantic actions/commands; it should not own buffer mutation rules.
 
-Documents are the most important core abstraction after workspaces.
+## Commands
 
-Each open document should eventually contain at least:
+Commands are first-class editor objects.
+
+Examples:
 
 ```text
-Document
-├── id
-├── uri/path
-├── text/buffer
-├── revision
-├── saved_revision
-├── encoding
-├── line ending
-└── external modification state
+:write
+:quit
+:edit
+:buffer
+:split
+:vsplit
+:tabnew
+:terminal
 ```
 
-Edits should be revisioned. A client submits an edit against a known revision; the core applies it, advances the revision, and emits the resulting change. This creates a sound base for multiple views, LSP synchronization, plugins, undo/redo, and eventually multiple clients.
+The command registry should support built-in Zig commands and Lua-registered commands through the same public-facing API.
 
-For the MVP, use a simple understandable text representation first. Do not prematurely build a sophisticated rope/piece-table unless measurements show it is necessary.
+## TUI architecture
 
-## RPC
+The built-in TUI is pure Zig.
 
-### Transport
-
-Start with JSON-RPC 2.0 over a local WebSocket because it is easy to inspect, easy for the SolidJS client to consume, and good for development.
-
-The protocol should remain transport-independent at the application layer so a Unix-domain socket or binary transport can be added later without redesigning editor semantics.
-
-### Method shape
-
-Prefer semantic namespaces:
+Input path:
 
 ```text
-system.*
-session.*
-workspace.*
-document.*
-command.*
-search.*
-language.*
-terminal.*
-task.*
-git.*
-plugin.*
+terminal bytes
+    ↓
+input decoder
+    ↓
+key notation / mouse / resize event
+    ↓
+keymap + modal parser
+    ↓
+editor command
+    ↓
+core state mutation
 ```
 
-Initial methods should stay very small:
+Rendering path:
 
 ```text
-system.hello
-workspace.get
-workspace.listFiles
-document.open
-document.applyEdits
-document.save
+editor/view state
+    ↓
+render into cell grid
+    ↓
+compare against previous grid
+    ↓
+emit only changed terminal cells
 ```
 
-### Events
-
-The core should publish semantic events such as:
+A cell should carry enough information for a terminal renderer without exposing terminal escape sequences to the editor core:
 
 ```text
-workspace.filesChanged
-document.changed
-document.saved
-document.externalChange
-task.output
-task.finished
-language.diagnostics
-terminal.output
+Cell
+├── grapheme/rune
+├── foreground
+├── background
+└── attributes
 ```
 
-Clients should not poll when an event can represent the state transition cleanly.
+The terminal must always be restored safely after normal exit, errors, interrupts, or panics where recovery is possible.
 
-### Versioning
+## Public editor API
 
-`system.hello` should negotiate or at minimum report:
+Zim should have one conceptual public API shared across extension mechanisms.
+
+Examples:
 
 ```text
-applicationVersion
-protocolVersion
-sessionId
-capabilities
+buffers
+windows
+commands
+keymaps
+options
+events/autocmds
+marks/extmarks
+diagnostics
+jobs
+LSP
+UI attachment
 ```
 
-Breaking protocol changes require a protocol-version increment.
+Built-in implementation code may use lower-level Zig functions, but features intended for extensions should converge on stable editor concepts rather than separate Lua/RPC-specific models.
 
-## Frontend architecture
+Neovim inspiration does not imply Neovim API compatibility. Compatibility can be evaluated later as an explicit project.
 
-Use SolidJS + TypeScript + Vite for the first-party GUI.
+## Lua
 
-The frontend should have a deliberately thin data layer:
+Lua is Zim's primary configuration and embedded plugin language.
+
+Expected user entrypoint:
 
 ```text
-WebSocket
-   │
-RPC client
-   │
-normalized client state
-   │
-Solid signals/stores
-   │
-views/components
+~/.config/zim/init.lua
 ```
 
-The UI may optimistically render safe interactions, but authoritative document/workspace state ultimately comes from the core.
+Lua should be able to:
 
-For the text editor, CodeMirror is a pragmatic first choice because it provides mature editing behavior without requiring Zim to write a text-rendering engine before validating the overall architecture.
+- read/set editor options
+- define keymaps
+- register commands
+- subscribe to events/autocommands
+- inspect and modify buffers through safe APIs
+- create marks/extmarks/decorations
+- publish diagnostics
+- start jobs and interact with other exposed subsystems
 
-## Production packaging
+Embedded Lua calls the public API directly in-process; it should not serialize each call through MessagePack-RPC.
 
-Development:
+The exact Lua runtime (for example PUC Lua versus LuaJIT) should be selected through a portability/performance spike. The public API must avoid unnecessary dependence on runtime-specific behavior.
+
+## Events and autocommands
+
+Core state transitions should emit typed events that can drive built-ins and plugins.
+
+Examples:
 
 ```text
-Zig core/server  <----WebSocket---->  Vite dev server
+BufRead
+BufWritePre
+BufWritePost
+BufEnter
+BufLeave
+TextChanged
+InsertEnter
+InsertLeave
+WinEnter
+WinLeave
+VimEnter-like startup event
+LspAttach
+DiagnosticChanged
 ```
 
-Production:
+Names do not need to match Neovim exactly, but the event model should be capable of the same style of extension.
+
+Events must avoid re-entrancy surprises where practical; mutation rules and callback ordering should be documented as the system matures.
+
+## Marks and extmarks
+
+Ordinary marks support user/editor positions.
+
+An extmark-like primitive should eventually provide revision-aware anchored positions/ranges for:
+
+- diagnostics
+- syntax/decorations
+- virtual text
+- plugin annotations
+- LSP features
+- future UI metadata
+
+This should be a core abstraction rather than a TUI drawing trick.
+
+## Undo and revisions
+
+Editing operations should produce structured change records and a monotonically increasing changed tick/revision.
+
+Undo/redo belongs to the buffer/editor core, not the UI.
+
+Start with a correct linear undo stack. An undo tree can be added once the editing model is stable.
+
+## Language intelligence and parsing
+
+LSP clients are child processes managed by Zim.
+
+Buffer lifecycle drives LSP synchronization:
 
 ```text
-SolidJS source
-     │
-     ▼
-Vite build
-     │
-     ▼
-web/dist
-     │
-     ▼
-embedded/packaged into zim
-     │
-     ▼
-single user-facing zim executable
+buffer open   -> didOpen
+buffer edit   -> didChange
+buffer save   -> didSave
+buffer close  -> didClose
 ```
 
-The exact asset-embedding mechanism can evolve. The user-facing invariant is more important: installing Zim should not require separately installing or starting the frontend.
+Diagnostics become editor-owned state and are rendered by whichever UI is attached.
 
-## Language Server Protocol
+Incremental syntax parsing/highlighting should also attach to buffer revisions. Tree-sitter is a natural candidate, but integration should be isolated behind a parsing/highlighting subsystem rather than spread through the TUI.
 
-Zim should manage language servers from the Zig core.
+## Jobs and terminals
 
-The core should translate editor document lifecycle into LSP lifecycle:
+Jobs and interactive terminals share process infrastructure but have distinct semantics.
+
+- **job/task:** process execution with captured/streamed output and completion status
+- **terminal:** PTY-backed interactive session with terminal-grid state
+
+The editor owns these processes. A UI renders them.
+
+## Plugin model
+
+Zim should support two extension classes.
+
+### Embedded Lua plugins
 
 ```text
-document.open        -> textDocument/didOpen
-document.changed     -> textDocument/didChange
-document.save        -> textDocument/didSave
+Zim process
+└── Lua runtime
+    └── plugin
+        └── direct Zim API
 ```
 
-Diagnostics, completion, hover, definition, references, and other results should be exposed to clients as Zim protocol concepts rather than leaking raw child-process ownership into the UI.
+Best for normal configuration and editor plugins.
 
-The first vertical slice should support exactly one configurable language server well before building a generalized installer/registry.
+### Remote plugins
 
-## Tasks and terminals
+```text
+Zim
+ │
+MessagePack-RPC
+ │
+external process
+```
 
-Tasks and terminals share process infrastructure but have different semantics.
+Remote plugins gain language independence and process isolation. They should register capabilities through the Zim API instead of receiving unrestricted access to internal pointers or allocator-owned objects.
 
-- A **task** is a command Zim starts, observes, and can report as completed/failed.
-- A **terminal** is an interactive PTY session with bidirectional input/output.
+## MessagePack-RPC
 
-Keep these separate at the protocol level even if they share lower-level process code.
+MessagePack-RPC is the external API transport.
 
-## Persistence
+Use it for:
 
-Persist only what creates clear user value in early releases:
+- remote plugins
+- external automation clients
+- embedding
+- headless control
+- optional external UIs
 
-- last workspace/session identity
-- open document paths
-- active document
-- optional layout state
+Initial transports should favor local operation:
 
-Do not persist arbitrary internal implementation structures. Use a small versioned session format that can be migrated or discarded safely.
+- stdio for embedded/child-process use
+- Unix-domain sockets on Unix-like systems
+- an appropriate local IPC equivalent on Windows
 
-## Security boundary
+TCP can be added when there is a clear use case and explicit security model.
 
-The frontend is a local client, but it should still communicate through explicit capabilities rather than gaining unrestricted filesystem/process access.
+The protocol should include API/version metadata and capability discovery so clients can fail clearly when versions differ.
 
-This becomes especially important if Zim later allows browser connections or third-party plugins.
+## External UI protocol
 
-Principle:
+When external graphical UIs arrive, Zim should expose an attachable UI protocol inspired by Neovim's separation of editor state from display.
 
-> A client can request a capability the core intentionally exposes; it cannot inherit the authority of the Zim process merely because it can connect to it.
+The UI protocol can carry high-frequency display primitives such as:
 
-The local server should bind to loopback by default and use an unguessable per-session token before browser-access features are considered stable.
+- grid resize
+- grid line updates
+- cursor position
+- mode changes
+- highlights
+- command-line state
+- popup/completion state
+- messages
+
+The semantic editor API remains available alongside UI events.
+
+This gives a future SolidJS client a fast display protocol without moving buffer ownership or editing semantics into JavaScript.
+
+## Headless mode
+
+Headless operation is a first-class startup mode:
+
+```bash
+zim --headless
+```
+
+It should initialize editor state, configuration/plugins as requested, API/RPC endpoints, buffers, jobs, and language tooling without initializing the terminal renderer.
+
+This is important for:
+
+- tests
+- automation
+- CI
+- remote clients
+- plugin development
+- embedding
+
+## Recommended module boundaries
+
+Directories should appear as implementations land, not as empty scaffolding.
+
+```text
+src/
+├── main.zig
+├── app/
+├── cli/
+├── editor/
+│   ├── buffer
+│   ├── window
+│   ├── tabpage
+│   ├── mode
+│   ├── edit
+│   ├── undo
+│   ├── marks
+│   └── registers
+├── input/
+├── keymap/
+├── command/
+├── tui/
+├── api/
+├── lua/
+├── rpc/
+├── event/
+├── syntax/
+├── lsp/
+├── job/
+├── terminal/
+├── search/
+├── fs/
+└── platform/
+
+tests/
+├── unit/
+├── editor/
+├── integration/
+└── rpc/
+```
 
 ## Testing strategy
 
-### Unit tests
+### Editor tests
 
-Test core data structures and state transitions without a browser:
+Most editing semantics should be testable without a terminal:
 
-- workspace resolution
-- document edits/revisions
-- dirty/saved state
-- command dispatch
-- protocol validation
-- session serialization
+- insert/delete
+- cursor motions
+- operators
+- text objects
+- counts
+- mode transitions
+- undo/redo
+- registers
+- commands
+- buffer/window behavior
 
-### Integration tests
+### TUI tests
 
-Start a real core/server and exercise it through RPC:
+Test input decoding, grid generation, resize behavior, and terminal restoration independently of editor semantics where possible.
 
-- handshake
-- open/edit/save
-- filesystem change propagation
-- task execution/output
-- LSP diagnostics
+### Lua/API tests
 
-### UI tests
+Exercise the public API from Lua and ensure plugin operations produce the same editor state transitions as built-in calls.
 
-Keep UI tests focused on client behavior rather than duplicating editor-core correctness tests.
+### RPC tests
 
-The architecture is healthy when most editor behavior can be tested headlessly through core APIs or RPC.
+Run headless Zim and control it through MessagePack-RPC.
 
-## Performance targets
+### End-to-end tests
 
-Exact budgets should be measured once the corresponding features exist, but the project should work toward explicit targets such as:
+Use PTY-based tests for a small set of real interactive flows such as open → insert → save → quit.
 
-- near-instant CLI startup
-- local RPC operations below perceptible interaction latency
-- incremental workspace updates rather than full-tree reloads
-- no UI-wide rerender for a single document state change
-- bounded memory growth for long-running sessions
+## Performance model
 
-Performance regressions should eventually be benchmarked in CI.
+The critical interactive path should remain local and allocation-conscious:
+
+```text
+keypress → decode → keymap/modal parser → edit → invalidation → grid diff → terminal write
+```
+
+RPC and Lua must not sit in that path unless a configured plugin explicitly participates.
+
+Performance targets should eventually cover startup, keystroke-to-render latency, large buffers, redraw volume, memory use, Lua callback overhead, and RPC throughput.
 
 ## Decision filter
 
 When adding a feature, ask:
 
-1. Who owns the authoritative state?
-2. What is the semantic command or event?
-3. Can the feature work without the GUI?
-4. Can the GUI be replaced without rewriting the core feature?
-5. Does this require a new abstraction now, or can a smaller explicit implementation solve it?
-6. Can we test the behavior headlessly?
+1. Is this editor state, UI state, or extension state?
+2. Does it belong to the buffer, window, tabpage, or global editor?
+3. Can core behavior be tested without a terminal?
+4. Is the operation composable with the modal command model?
+5. Should Lua and remote plugins be able to access it through the public API?
+6. Is this on the keystroke/render hot path?
+7. Are we adding complexity because measurement requires it, or because another editor happens to have it?
 
-If those answers are unclear, the architecture probably needs to be designed before implementation starts.
+If those answers are unclear, design the editor primitive before adding UI behavior around it.
