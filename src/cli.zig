@@ -84,10 +84,25 @@ test "parse headless target" {
 }
 
 test "parse help and version" {
-    try std.testing.expect((try parse(&.{"--help"})) == .help);
-    try std.testing.expect((try parse(&.{"-h"})) == .help);
-    try std.testing.expect((try parse(&.{"--version"})) == .version);
-    try std.testing.expect((try parse(&.{"-v"})) == .version);
+    switch (try parse(&.{"--help"})) {
+        .help => {},
+        else => return error.TestUnexpectedResult,
+    }
+
+    switch (try parse(&.{"-h"})) {
+        .help => {},
+        else => return error.TestUnexpectedResult,
+    }
+
+    switch (try parse(&.{"--version"})) {
+        .version => {},
+        else => return error.TestUnexpectedResult,
+    }
+
+    switch (try parse(&.{"-v"})) {
+        .version => {},
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "reject unknown options and extra targets" {
