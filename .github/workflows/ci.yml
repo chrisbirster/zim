@@ -22,6 +22,9 @@ jobs:
           - windows-latest
 
     steps:
+      - name: Preserve LF line endings
+        run: git config --global core.autocrlf false
+
       - name: Checkout
         uses: actions/checkout@v4
 
