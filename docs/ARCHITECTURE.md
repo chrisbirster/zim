@@ -2,9 +2,9 @@
 
 ## Architectural thesis
 
-Zim is a Neovim-class editor implemented in Zig.
+Zim is a terminal-only Neovim-class editor implemented in Zig.
 
-The built-in terminal UI is the first client, but unlike an external client it lives in the same process and talks to the editor core through direct Zig APIs. External plugins, automation tools, embedding hosts, and future UIs use the public editor API over MessagePack-RPC.
+The terminal UI and editor core live in the same native process and communicate through direct Zig APIs. Embedded Lua extends the editor in-process. External plugins and automation tools use the public editor API over MessagePack-RPC.
 
 ```text
                      ┌──────────────────────┐
@@ -22,13 +22,13 @@ The built-in terminal UI is the first client, but unlike an external client it l
                   │                               │
           direct public API                 MessagePack-RPC
                   │                               │
-             embedded Lua              ┌──────────┼───────────┐
-                                       │          │           │
-                                  remote      automation   future UI
-                                  plugins       clients
+             embedded Lua              ┌──────────┴───────────┐
+                                       │                      │
+                                  remote plugins        automation
+                                                       / embedding
 ```
 
-A future SolidJS/WebView GUI is permitted, but it is an optional external UI and must not change the editor's core architecture.
+There is no graphical UI layer in Zim's product architecture.
 
 ## Process model
 
@@ -46,17 +46,15 @@ zim
     └── PTYs
 ```
 
-No HTTP server, browser runtime, WebSocket server, Node.js process, or GUI framework is required to run the editor.
+No HTTP server, browser runtime, WebSocket server, Node.js process, WebView, or GUI framework is required or planned for the editor.
 
-Headless mode starts the same core without the TUI.
+Headless mode starts the same core without initializing the TUI.
 
 ## Fundamental editor model
 
 ### Buffer
 
 A buffer owns editable text and text-related state.
-
-Conceptually:
 
 ```text
 Buffer
@@ -71,31 +69,17 @@ Buffer
 └── attachments/listeners
 ```
 
-The initial text representation should be intentionally simple—likely line-oriented storage or another straightforward representation. Rope/piece-table complexity should be added only after benchmarks demonstrate a real need.
+Start with an understandable text representation. Rope/piece-table complexity should be added only after benchmarks demonstrate a need.
 
 ### Window
 
-A window is a view onto a buffer.
-
-It owns view-specific state such as:
-
-- cursor
-- viewport/scroll position
-- local options
-- dimensions
-- folds/view decorations later
-
-Multiple windows may display the same buffer.
+A window is a terminal view onto a buffer. It owns cursor, viewport, local options, dimensions, folds, and other view-specific state. Multiple windows may display the same buffer.
 
 ### Tab page
 
-A tab page owns a layout of windows. A tab is not synonymous with a file.
-
-Split layouts should be representable as a tree so horizontal/vertical splits remain independent of terminal coordinates.
+A tab page owns a layout of windows. A tab is not synonymous with a file. Split layouts should be represented independently of terminal coordinates.
 
 ### Editor
-
-The top-level editor state owns:
 
 ```text
 Editor
@@ -116,9 +100,9 @@ Editor
 
 ## Modal command architecture
 
-Zim should model Vim-style editing as composable semantics rather than hard-coded key sequences.
+Zim models Vim-style editing as composable semantics rather than hard-coded key sequences.
 
-Core concepts include:
+Core concepts:
 
 ```text
 count
@@ -139,13 +123,13 @@ ci"
 operator=change text-object=inside-quotes
 ```
 
-Normal, Insert, Visual, Visual Line, Visual Block, Operator Pending, and Command Line modes should be explicit editor state.
+Normal, Insert, Visual, Visual Line, Visual Block, Operator Pending, and Command Line modes are explicit editor state.
 
-The keymap layer maps input sequences to semantic actions/commands; it should not own buffer mutation rules.
+The keymap layer maps input sequences to semantic actions; it does not own buffer mutation rules.
 
 ## Commands
 
-Commands are first-class editor objects.
+Commands are first-class editor objects. The command registry supports built-in Zig commands and Lua-registered commands through the same public-facing API.
 
 Examples:
 
@@ -160,11 +144,9 @@ Examples:
 :terminal
 ```
 
-The command registry should support built-in Zig commands and Lua-registered commands through the same public-facing API.
-
 ## TUI architecture
 
-The built-in TUI is pure Zig.
+The TUI is Zim's permanent user interface.
 
 Input path:
 
@@ -173,7 +155,7 @@ terminal bytes
     ↓
 input decoder
     ↓
-key notation / mouse / resize event
+key / mouse / resize event
     ↓
 keymap + modal parser
     ↓
@@ -185,7 +167,7 @@ core state mutation
 Rendering path:
 
 ```text
-editor/view state
+editor/window state
     ↓
 render into cell grid
     ↓
@@ -194,27 +176,20 @@ compare against previous grid
 emit only changed terminal cells
 ```
 
-A cell should carry enough information for a terminal renderer without exposing terminal escape sequences to the editor core:
+A cell carries grapheme/rune, foreground, background, and attributes. Terminal escape sequences belong to the TUI/platform layer rather than the editor model.
 
-```text
-Cell
-├── grapheme/rune
-├── foreground
-├── background
-└── attributes
-```
+The terminal must be restored safely after normal exit, errors, interrupts, or panics where recovery is possible.
 
-The terminal must always be restored safely after normal exit, errors, interrupts, or panics where recovery is possible.
+Zim should behave well in local terminals, SSH sessions, tmux/screen, and supported Windows terminal environments.
 
 ## Public editor API
 
-Zim should have one conceptual public API shared across extension mechanisms.
-
-Examples:
+Zim has one conceptual public API shared across extension mechanisms:
 
 ```text
 buffers
 windows
+tabpages
 commands
 keymaps
 options
@@ -223,12 +198,11 @@ marks/extmarks
 diagnostics
 jobs
 LSP
-UI attachment
 ```
 
-Built-in implementation code may use lower-level Zig functions, but features intended for extensions should converge on stable editor concepts rather than separate Lua/RPC-specific models.
+There is no external UI attachment API in the product plan.
 
-Neovim inspiration does not imply Neovim API compatibility. Compatibility can be evaluated later as an explicit project.
+Neovim inspiration does not imply Neovim API compatibility. Compatibility can be evaluated separately if it creates enough value.
 
 ## Lua
 
@@ -240,99 +214,46 @@ Expected user entrypoint:
 ~/.config/zim/init.lua
 ```
 
-Lua should be able to:
+Lua should be able to read/set options, define keymaps, register commands, subscribe to events/autocommands, inspect and modify buffers through safe APIs, create marks/extmarks/decorations, publish diagnostics, and start jobs.
 
-- read/set editor options
-- define keymaps
-- register commands
-- subscribe to events/autocommands
-- inspect and modify buffers through safe APIs
-- create marks/extmarks/decorations
-- publish diagnostics
-- start jobs and interact with other exposed subsystems
+Embedded Lua calls the public API directly in-process; it does not serialize each call through MessagePack-RPC.
 
-Embedded Lua calls the public API directly in-process; it should not serialize each call through MessagePack-RPC.
-
-The exact Lua runtime (for example PUC Lua versus LuaJIT) should be selected through a portability/performance spike. The public API must avoid unnecessary dependence on runtime-specific behavior.
+The Lua runtime will be selected through a portability/performance spike. The public API should avoid unnecessary dependence on runtime-specific behavior.
 
 ## Events and autocommands
 
-Core state transitions should emit typed events that can drive built-ins and plugins.
+Core transitions emit typed events usable by built-ins and plugins, including buffer lifecycle, mode transitions, window/tab changes, LSP attachment, diagnostics, and text changes.
 
-Examples:
-
-```text
-BufRead
-BufWritePre
-BufWritePost
-BufEnter
-BufLeave
-TextChanged
-InsertEnter
-InsertLeave
-WinEnter
-WinLeave
-VimEnter-like startup event
-LspAttach
-DiagnosticChanged
-```
-
-Names do not need to match Neovim exactly, but the event model should be capable of the same style of extension.
-
-Events must avoid re-entrancy surprises where practical; mutation rules and callback ordering should be documented as the system matures.
+Mutation/re-entrancy rules and callback ordering should become explicit and documented as the system matures.
 
 ## Marks and extmarks
 
-Ordinary marks support user/editor positions.
+Ordinary marks support user/editor positions. An extmark-like primitive should provide revision-aware anchored positions/ranges for diagnostics, syntax/decorations, virtual text, plugin annotations, and language tooling.
 
-An extmark-like primitive should eventually provide revision-aware anchored positions/ranges for:
-
-- diagnostics
-- syntax/decorations
-- virtual text
-- plugin annotations
-- LSP features
-- future UI metadata
-
-This should be a core abstraction rather than a TUI drawing trick.
+These are editor primitives, not TUI drawing hacks.
 
 ## Undo and revisions
 
-Editing operations should produce structured change records and a monotonically increasing changed tick/revision.
+Editing operations produce structured change records and a monotonically increasing changed tick/revision. Undo/redo belongs to the buffer/editor core.
 
-Undo/redo belongs to the buffer/editor core, not the UI.
-
-Start with a correct linear undo stack. An undo tree can be added once the editing model is stable.
+Start with a correct linear undo stack. Add an undo tree only when the editing model is stable.
 
 ## Language intelligence and parsing
 
-LSP clients are child processes managed by Zim.
+LSP clients are child processes managed by Zim. Buffer lifecycle drives LSP synchronization, and diagnostics become editor-owned state rendered by the TUI.
 
-Buffer lifecycle drives LSP synchronization:
-
-```text
-buffer open   -> didOpen
-buffer edit   -> didChange
-buffer save   -> didSave
-buffer close  -> didClose
-```
-
-Diagnostics become editor-owned state and are rendered by whichever UI is attached.
-
-Incremental syntax parsing/highlighting should also attach to buffer revisions. Tree-sitter is a natural candidate, but integration should be isolated behind a parsing/highlighting subsystem rather than spread through the TUI.
+Incremental parsing/highlighting also attaches to buffer revisions. Tree-sitter is a natural candidate but is not an architectural requirement.
 
 ## Jobs and terminals
 
-Jobs and interactive terminals share process infrastructure but have distinct semantics.
+Jobs and interactive terminals share process infrastructure but have distinct semantics:
 
 - **job/task:** process execution with captured/streamed output and completion status
 - **terminal:** PTY-backed interactive session with terminal-grid state
 
-The editor owns these processes. A UI renders them.
+Both are owned by the editor core and rendered through terminal windows/buffers.
 
 ## Plugin model
-
-Zim should support two extension classes.
 
 ### Embedded Lua plugins
 
@@ -343,7 +264,7 @@ Zim process
         └── direct Zim API
 ```
 
-Best for normal configuration and editor plugins.
+This is the normal configuration/plugin path.
 
 ### Remote plugins
 
@@ -355,11 +276,11 @@ MessagePack-RPC
 external process
 ```
 
-Remote plugins gain language independence and process isolation. They should register capabilities through the Zim API instead of receiving unrestricted access to internal pointers or allocator-owned objects.
+Remote plugins provide language independence and process isolation. They interact through documented handles/capabilities rather than internal pointers.
 
 ## MessagePack-RPC
 
-MessagePack-RPC is the external API transport.
+MessagePack-RPC is the external extension and automation transport.
 
 Use it for:
 
@@ -367,59 +288,30 @@ Use it for:
 - external automation clients
 - embedding
 - headless control
-- optional external UIs
 
-Initial transports should favor local operation:
+Initial transports favor local operation:
 
-- stdio for embedded/child-process use
+- stdio
 - Unix-domain sockets on Unix-like systems
 - an appropriate local IPC equivalent on Windows
 
-TCP can be added when there is a clear use case and explicit security model.
+TCP can be added only with a clear use case and security model.
 
-The protocol should include API/version metadata and capability discovery so clients can fail clearly when versions differ.
-
-## External UI protocol
-
-When external graphical UIs arrive, Zim should expose an attachable UI protocol inspired by Neovim's separation of editor state from display.
-
-The UI protocol can carry high-frequency display primitives such as:
-
-- grid resize
-- grid line updates
-- cursor position
-- mode changes
-- highlights
-- command-line state
-- popup/completion state
-- messages
-
-The semantic editor API remains available alongside UI events.
-
-This gives a future SolidJS client a fast display protocol without moving buffer ownership or editing semantics into JavaScript.
+The protocol includes API/version metadata and capability discovery.
 
 ## Headless mode
-
-Headless operation is a first-class startup mode:
 
 ```bash
 zim --headless
 ```
 
-It should initialize editor state, configuration/plugins as requested, API/RPC endpoints, buffers, jobs, and language tooling without initializing the terminal renderer.
+Headless mode initializes editor state, configuration/plugins as requested, buffers, jobs, language tooling, and optional RPC endpoints without terminal rendering.
 
-This is important for:
-
-- tests
-- automation
-- CI
-- remote clients
-- plugin development
-- embedding
+It exists for tests, automation, CI, remote plugins, and embedding—not as a second UI product.
 
 ## Recommended module boundaries
 
-Directories should appear as implementations land, not as empty scaffolding.
+Directories appear as implementations land, not as empty scaffolding.
 
 ```text
 src/
@@ -460,46 +352,21 @@ tests/
 
 ## Testing strategy
 
-### Editor tests
+Most editing semantics are tested without a terminal: insert/delete, motions, operators, text objects, counts, modes, undo/redo, registers, commands, and buffer/window behavior.
 
-Most editing semantics should be testable without a terminal:
+TUI tests focus on input decoding, grid generation, resize behavior, terminal capabilities, and terminal restoration.
 
-- insert/delete
-- cursor motions
-- operators
-- text objects
-- counts
-- mode transitions
-- undo/redo
-- registers
-- commands
-- buffer/window behavior
-
-### TUI tests
-
-Test input decoding, grid generation, resize behavior, and terminal restoration independently of editor semantics where possible.
-
-### Lua/API tests
-
-Exercise the public API from Lua and ensure plugin operations produce the same editor state transitions as built-in calls.
-
-### RPC tests
-
-Run headless Zim and control it through MessagePack-RPC.
-
-### End-to-end tests
-
-Use PTY-based tests for a small set of real interactive flows such as open → insert → save → quit.
+Lua/API tests prove plugins drive the same core state transitions as built-ins. RPC tests run headless Zim and control it through MessagePack-RPC. A small PTY-based end-to-end suite verifies real interactive flows.
 
 ## Performance model
 
-The critical interactive path should remain local and allocation-conscious:
+The critical interactive path stays local and allocation-conscious:
 
 ```text
 keypress → decode → keymap/modal parser → edit → invalidation → grid diff → terminal write
 ```
 
-RPC and Lua must not sit in that path unless a configured plugin explicitly participates.
+RPC and Lua do not sit in that path unless a configured plugin explicitly participates.
 
 Performance targets should eventually cover startup, keystroke-to-render latency, large buffers, redraw volume, memory use, Lua callback overhead, and RPC throughput.
 
@@ -507,12 +374,12 @@ Performance targets should eventually cover startup, keystroke-to-render latency
 
 When adding a feature, ask:
 
-1. Is this editor state, UI state, or extension state?
+1. Is this editor state, terminal-view state, or extension state?
 2. Does it belong to the buffer, window, tabpage, or global editor?
 3. Can core behavior be tested without a terminal?
 4. Is the operation composable with the modal command model?
-5. Should Lua and remote plugins be able to access it through the public API?
+5. Should Lua and remote plugins access it through the public API?
 6. Is this on the keystroke/render hot path?
 7. Are we adding complexity because measurement requires it, or because another editor happens to have it?
 
-If those answers are unclear, design the editor primitive before adding UI behavior around it.
+If those answers are unclear, design the editor primitive before adding TUI behavior around it.
