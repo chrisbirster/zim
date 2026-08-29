@@ -37,8 +37,8 @@ pub fn run(init: std.process.Init) !u8 {
             return 0;
         },
         .run => |options| {
-            var state = editor.Editor.init(options.target);
-            _ = &state;
+            const state = editor.Editor.init(options.target);
+            _ = state;
 
             if (options.headless) {
                 return 0;
