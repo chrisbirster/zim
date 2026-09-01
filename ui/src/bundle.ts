@@ -8,13 +8,11 @@ import {
 import {
   Column,
   NativeView,
-  Popup,
   Row,
   Spacer,
   Text,
   createSignal,
   render,
-  type HondoRefHandle,
 } from '@hondo/solid';
 import { flush } from 'solid-js';
 
@@ -24,8 +22,13 @@ const [mode, setMode] = createSignal('NORMAL');
 const [line, setLine] = createSignal(1);
 const [column, setColumn] = createSignal(1);
 const [modified, setModified] = createSignal(false);
+const [path, setPath] = createSignal('[No Name]');
+const [status, setStatus] = createSignal('');
 const [commandOpen, setCommandOpen] = createSignal(false);
-let editorRef: HondoRefHandle | undefined;
+const [commandText, setCommandText] = createSignal('');
+const [buffers, setBuffers] = createSignal(1);
+const [windows, setWindows] = createSignal(1);
+const [tabs, setTabs] = createSignal(1);
 
 type ZimGlobals = typeof globalThis & {
   __zimUiDispose?: () => void;
@@ -47,14 +50,14 @@ function onNativeState(event: HondoNodeEvent): void {
   if (typeof value.line === 'number') setLine(value.line);
   if (typeof value.column === 'number') setColumn(value.column);
   if (typeof value.modified === 'boolean') setModified(value.modified);
-  if (value.commandOpen === true) setCommandOpen(true);
+  if (typeof value.path === 'string') setPath(value.path);
+  if (typeof value.status === 'string') setStatus(value.status);
+  if (typeof value.commandOpen === 'boolean') setCommandOpen(value.commandOpen);
+  if (typeof value.commandText === 'string') setCommandText(value.commandText);
+  if (typeof value.buffers === 'number') setBuffers(value.buffers);
+  if (typeof value.windows === 'number') setWindows(value.windows);
+  if (typeof value.tabs === 'number') setTabs(value.tabs);
   flush();
-}
-
-function dismissCommand(): void {
-  setCommandOpen(false);
-  flush();
-  editorRef?.focus();
 }
 
 const disposeRender = render(() =>
@@ -69,26 +72,38 @@ const disposeRender = render(() =>
             children: ' ZIM ',
           }),
           Text({
-            style: { dim: true, foreground: 'bright-cyan' },
-            children: 'Hondo native editor',
+            style: { foreground: 'bright-cyan' },
+            children: () => path(),
           }),
           Spacer({ grow: 1 }),
-          Text({ style: { dim: true }, children: 'Ctrl-C quit  : command' }),
+          Text({
+            style: { dim: true },
+            children: () => `B${buffers()} W${windows()} T${tabs()} `,
+          }),
         ],
       }),
       NativeView({
         nativeType: 'zim.editor',
-        nativeProps: { shell: 'hondo', protocol: 1 },
+        nativeProps: { shell: 'hondo', protocol: 2 },
         autoFocus: true,
-        ref: handle => {
-          editorRef = handle;
-        },
         onNativeState,
         onKey: () => {
           globals.__zimJsKeyEvents = (globals.__zimJsKeyEvents ?? 0) + 1;
         },
         style: { grow: 1, minHeight: 1, background: '#080b10' },
       }),
+      () =>
+        commandOpen()
+          ? Row({
+              style: { height: 1, background: '#20242c' },
+              children: [
+                Text({
+                  style: { foreground: 'bright-yellow', bold: true },
+                  children: () => ` ${commandText()}`,
+                }),
+              ],
+            })
+          : null,
       Row({
         style: { height: 1, background: '#161b22' },
         children: [
@@ -100,39 +115,14 @@ const disposeRender = render(() =>
             style: { foreground: 'bright-yellow' },
             children: () => (modified() ? ' [+]' : ''),
           }),
-          Spacer({ grow: 1 }),
           Text({
-            children: () => `Ln ${line()}, Col ${column()} `,
+            style: { dim: true },
+            children: () => (status() ? ` ${status()}` : ''),
           }),
+          Spacer({ grow: 1 }),
+          Text({ children: () => `Ln ${line()}, Col ${column()} ` }),
         ],
       }),
-      () =>
-        commandOpen()
-          ? Popup({
-              x: 2,
-              y: 2,
-              zIndex: 100,
-              focusable: true,
-              autoFocus: true,
-              onDismiss: dismissCommand,
-              style: {
-                width: 48,
-                height: 4,
-                padding: 1,
-                background: '#20242c',
-                foreground: 'bright-white',
-              },
-              children: Column({
-                children: [
-                  Text({
-                    style: { bold: true, foreground: 'bright-magenta' },
-                    children: 'COMMAND PALETTE',
-                  }),
-                  Text({ style: { dim: true }, children: 'Esc closes • editor remains Zig-native' }),
-                ],
-              }),
-            })
-          : null,
     ],
   }),
   host.root,

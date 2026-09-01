@@ -123,3 +123,8 @@ zig fmt src build.zig
 ```bash
 zig build test
 ```
+
+
+## Neovim fidelity status
+
+The editor core now owns classic motions/operators/counts, paragraph and sentence text objects, Vim-style registers, macros, marks, jump/change history, rectangular Visual Block editing, and provider-independent fold state. Tree-sitter remains a separate language service until PR #15 lands; it augments rather than replaces classic Vim grammar.
