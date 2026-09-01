@@ -196,6 +196,7 @@ fn handleMouse(
             else => return .ignored,
         }
         _ = state.editor.setActiveWindow(hit.window_id);
+        try state.editor.syncCurrentLanguage(false);
         context.invalidate();
         try publishState(state, context);
         return .handled;
@@ -203,6 +204,7 @@ fn handleMouse(
 
     if (mouse.button != .left or mouse.action != .press) return .ignored;
     _ = state.editor.setActiveWindow(hit.window_id);
+    try state.editor.syncCurrentLanguage(false);
     const window = state.editor.windowById(hit.window_id) orelse return .ignored;
     const line_index = window.scroll_line + (mouse.y - hit.bounds.y);
     const content_x = hit.bounds.x + @min(gutter_width, hit.bounds.width);
@@ -318,6 +320,16 @@ fn paintWindow(
         const line = buffer.text.items[line_start..end];
         if (content_width > 0) {
             try grid.paintUtf8(bounds.x + gutter, bounds.y + row, line, content_width);
+            try paintSyntaxHighlights(
+                editor,
+                grid,
+                buffer.id,
+                line_start,
+                end,
+                bounds.x + gutter,
+                bounds.y + row,
+                content_width,
+            );
         }
 
         if (active and window.cursor >= line_start and window.cursor <= end and content_width > 0) {
@@ -351,6 +363,52 @@ fn paintWindow(
         }
         line_start = end + 1;
     }
+}
+
+fn paintSyntaxHighlights(
+    editor: *const editor_module.Editor,
+    grid: *hondo.cell_grid.CellGrid,
+    buffer_id: editor_module.BufferId,
+    line_start: usize,
+    line_end: usize,
+    content_x: usize,
+    y: usize,
+    content_width: usize,
+) !void {
+    const buffer = editor.bufferByIdConst(buffer_id) orelse return;
+    for (editor.syntaxHighlightsForBuffer(buffer_id)) |highlight| {
+        const start = @max(line_start, @as(usize, @intCast(highlight.range.start_byte)));
+        const end = @min(line_end, @as(usize, @intCast(highlight.range.end_byte)));
+        if (start >= end or start > buffer.text.items.len or end > buffer.text.items.len) continue;
+        const prefix_width = hondo.cell_grid.displayWidth(buffer.text.items[line_start..start]);
+        if (prefix_width >= content_width) continue;
+        try grid.paintUtf8Styled(
+            content_x + prefix_width,
+            y,
+            buffer.text.items[start..end],
+            content_width - prefix_width,
+            syntaxStyle(highlight.capture),
+        );
+    }
+}
+
+fn syntaxStyle(capture: []const u8) @TypeOf((hondo.cell_grid.Cell{}).style) {
+    if (std.mem.indexOf(u8, capture, "comment") != null) return .{
+        .foreground = .{ .ansi = 8 },
+        .attributes = .{ .italic = true },
+    };
+    if (std.mem.indexOf(u8, capture, "string") != null) return .{ .foreground = .{ .ansi = 10 } };
+    if (std.mem.indexOf(u8, capture, "keyword") != null) return .{
+        .foreground = .{ .ansi = 13 },
+        .attributes = .{ .bold = true },
+    };
+    if (std.mem.indexOf(u8, capture, "function") != null) return .{ .foreground = .{ .ansi = 14 } };
+    if (std.mem.indexOf(u8, capture, "type") != null) return .{ .foreground = .{ .ansi = 12 } };
+    if (std.mem.indexOf(u8, capture, "number") != null or std.mem.indexOf(u8, capture, "constant") != null) {
+        return .{ .foreground = .{ .ansi = 11 } };
+    }
+    if (std.mem.indexOf(u8, capture, "operator") != null) return .{ .foreground = .{ .ansi = 6 } };
+    return .{};
 }
 
 fn ensureCursorVisible(editor: *editor_module.Editor, window_id: editor_module.WindowId, viewport_height: usize) void {
