@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .hondo = .{
-            .url = "https://github.com/chrisbirster/hondo/archive/f3b1eedf5392828d01be4af3fbfc6dab30b3c5fe.tar.gz",
-            .hash = "hondo-0.1.0-alpha.0-TaPY_7kmAwDLT3ijt9RfQnLOXVsE8Kjmqr62_pvu2uNV",
+            .url = "https://github.com/chrisbirster/hondo/archive/99b0c64f880428f6357e63e9b57b8dffa853db06.tar.gz",
+            .hash = "hondo-0.1.0-alpha.0-TaPY_z0sAwAShCsJPA9v4tyTeIEFCYyk2jPhz6P0cYZw",
             .lazy = true,
         },
     },
