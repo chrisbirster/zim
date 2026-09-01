@@ -258,9 +258,9 @@ pub const Editor = struct {
         return self.currentWindowConst().cursor;
     }
 
-    pub fn setCursor(self: *Editor, cursor: usize) void {
+    pub fn setCursor(self: *Editor, new_cursor: usize) void {
         const max = self.currentBuffer().text.items.len;
-        self.currentWindow().cursor = @min(cursor, max);
+        self.currentWindow().cursor = @min(new_cursor, max);
     }
 
     pub fn cursorPosition(self: *const Editor) Position {
@@ -360,8 +360,8 @@ pub const Editor = struct {
     pub fn undo(self: *Editor) !bool {
         self.finishUndoGroup();
         const window = self.currentWindow();
-        if (try self.currentBuffer().undoOne(self.allocator, window.cursor)) |cursor| {
-            window.cursor = cursor;
+        if (try self.currentBuffer().undoOne(self.allocator, window.cursor)) |restored_cursor| {
+            window.cursor = restored_cursor;
             self.setStatus("undo", .{});
             return true;
         }
@@ -372,8 +372,8 @@ pub const Editor = struct {
     pub fn redo(self: *Editor) !bool {
         self.finishUndoGroup();
         const window = self.currentWindow();
-        if (try self.currentBuffer().redoOne(self.allocator, window.cursor)) |cursor| {
-            window.cursor = cursor;
+        if (try self.currentBuffer().redoOne(self.allocator, window.cursor)) |restored_cursor| {
+            window.cursor = restored_cursor;
             self.setStatus("redo", .{});
             return true;
         }
@@ -946,9 +946,9 @@ pub const Editor = struct {
         };
     }
 
-    fn lineRange(self: *const Editor, cursor: usize, count: usize) Range {
+    fn lineRange(self: *const Editor, at: usize, count: usize) Range {
         const bytes = self.text();
-        const start = lineStartAt(bytes, cursor);
+        const start = lineStartAt(bytes, at);
         var end = start;
         for (0..count) |_| {
             const line_end = lineEnd(bytes, end);
@@ -963,10 +963,18 @@ pub const Editor = struct {
         var target = start;
         var inclusive = false;
         switch (cp) {
-            'h' => for (0..count) |_| target = previousCodepointStartSafe(self.text(), target),
-            'l' => for (0..count) |_| target = nextCodepointStart(self.text(), target),
-            'w' => for (0..count) |_| target = nextWordStart(self.text(), target),
-            'b' => for (0..count) |_| target = previousWordStart(self.text(), target),
+            'h' => {
+                for (0..count) |_| target = previousCodepointStartSafe(self.text(), target);
+            },
+            'l' => {
+                for (0..count) |_| target = nextCodepointStart(self.text(), target);
+            },
+            'w' => {
+                for (0..count) |_| target = nextWordStart(self.text(), target);
+            },
+            'b' => {
+                for (0..count) |_| target = previousWordStart(self.text(), target);
+            },
             'e' => {
                 for (0..count) |_| target = wordEndOffset(self.text(), target);
                 inclusive = true;
@@ -1005,30 +1013,30 @@ pub const Editor = struct {
 
     fn textObjectRange(self: *const Editor, scope: TextObjectScope, cp: u21) ?Range {
         const bytes = self.text();
-        const cursor = self.cursor();
+        const at = self.cursor();
         if (cp == 'w') {
-            var start = cursor;
+            var start = at;
             if (start >= bytes.len and start > 0) start = previousCodepointStartSafe(bytes, start);
             while (start > 0 and isWordByte(bytes[previousCodepointStartSafe(bytes, start)])) {
                 const previous = previousCodepointStartSafe(bytes, start);
                 if (!isWordByte(bytes[previous])) break;
                 start = previous;
             }
-            var end = cursor;
+            var end = at;
             while (end < bytes.len and isWordByte(bytes[end])) end = nextCodepointStart(bytes, end);
             if (start == end) return null;
             if (scope == .around) {
                 while (end < bytes.len and isSpaceByte(bytes[end])) end += 1;
-                if (end == cursor) while (start > 0 and isSpaceByte(bytes[start - 1])) start -= 1;
+                if (end == at) while (start > 0 and isSpaceByte(bytes[start - 1])) start -= 1;
             }
             return .{ .start = start, .end = end };
         }
 
         const pair = delimiterPair(cp) orelse return null;
-        const line_start = lineStartAt(bytes, cursor);
-        const line_end = lineEnd(bytes, cursor);
+        const line_start = lineStartAt(bytes, at);
+        const line_end = lineEnd(bytes, at);
         var left: ?usize = null;
-        var index = cursor;
+        var index = at;
         while (index > line_start) {
             index -= 1;
             if (bytes[index] == pair.open) {
@@ -1036,9 +1044,9 @@ pub const Editor = struct {
                 break;
             }
         }
-        if (left == null and cursor < line_end and bytes[cursor] == pair.open) left = cursor;
+        if (left == null and at < line_end and bytes[at] == pair.open) left = at;
         const start_delimiter = left orelse return null;
-        var right = @max(cursor +| 1, start_delimiter + 1);
+        var right = @max(at +| 1, start_delimiter + 1);
         while (right < line_end and bytes[right] != pair.close) : (right += 1) {}
         if (right >= line_end or bytes[right] != pair.close) return null;
         return if (scope == .inner)
@@ -1132,9 +1140,9 @@ pub const Editor = struct {
         if (bytes.len == 0) return;
         try self.ensureUndoSnapshot();
         const buffer = self.currentBuffer();
-        const cursor = self.cursor();
-        try insertSliceAt(buffer, self.allocator, cursor, bytes);
-        self.currentWindow().cursor = cursor + bytes.len;
+        const insertion_cursor = self.cursor();
+        try insertSliceAt(buffer, self.allocator, insertion_cursor, bytes);
+        self.currentWindow().cursor = insertion_cursor + bytes.len;
         buffer.markChanged();
     }
 
@@ -1180,9 +1188,9 @@ pub const Editor = struct {
 
     fn moveVertical(self: *Editor, direction: i8) bool {
         const bytes = self.text();
-        const cursor = self.cursor();
-        const current_start = lineStartAt(bytes, cursor);
-        const byte_column = cursor - current_start;
+        const current_cursor = self.cursor();
+        const current_start = lineStartAt(bytes, current_cursor);
+        const byte_column = current_cursor - current_start;
         if (direction < 0) {
             if (current_start == 0) return false;
             const previous_end = current_start - 1;
@@ -1190,7 +1198,7 @@ pub const Editor = struct {
             self.currentWindow().cursor = previous_start + @min(byte_column, previous_end - previous_start);
             return true;
         }
-        const current_end = lineEnd(bytes, cursor);
+        const current_end = lineEnd(bytes, current_cursor);
         if (current_end >= bytes.len) return false;
         const next_start = current_end + 1;
         const next_end = lineEnd(bytes, next_start);
@@ -1243,21 +1251,21 @@ pub const Editor = struct {
         if (cp > 0x7f) return false;
         const target: u8 = @intCast(cp);
         const bytes = self.text();
-        const cursor = self.cursor();
-        const start = lineStartAt(bytes, cursor);
-        const end = lineEnd(bytes, cursor);
+        const current_cursor = self.cursor();
+        const start = lineStartAt(bytes, current_cursor);
+        const end = lineEnd(bytes, current_cursor);
         if (pending.backwards) {
-            if (cursor <= start) return true;
-            var index = cursor;
+            if (current_cursor <= start) return true;
+            var index = current_cursor;
             while (index > start) {
                 index -= 1;
                 if (bytes[index] == target) {
-                    self.currentWindow().cursor = if (pending.till) @min(index + 1, cursor) else index;
+                    self.currentWindow().cursor = if (pending.till) @min(index + 1, current_cursor) else index;
                     return true;
                 }
             }
         } else {
-            var index = @min(cursor + 1, end);
+            var index = @min(current_cursor + 1, end);
             while (index < end) : (index += 1) {
                 if (bytes[index] == target) {
                     self.currentWindow().cursor = if (pending.till and index > 0) index - 1 else index;
