@@ -337,7 +337,7 @@ pub const Editor = struct {
         return output[0 .. 1 + len];
     }
 
-    pub fn handleKey(self: *Editor, incoming: Key) !HandleResult {
+    pub fn handleKey(self: *Editor, incoming: Key) anyerror!HandleResult {
         const key = self.resolveKey(incoming);
         if (self.recording_change and !self.replaying_change) {
             try self.current_change.append(self.allocator, key);
