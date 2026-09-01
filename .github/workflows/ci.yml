@@ -33,14 +33,28 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Resolve pinned Hondo package hash
-        run: zig fetch https://github.com/chrisbirster/hondo/archive/f3b1eedf5392828d01be4af3fbfc6dab30b3c5fe.tar.gz
-
-      - name: Check formatting
+      - name: Check Zig formatting
         run: zig fmt --check src build.zig
 
-      - name: Build
+      - name: Test pure Zig editor/headless core
+        run: zig build test-core -Dheadless-only=true
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install UI dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Bundle Solid/Hondo UI
+        run: npm run build:ui
+
+      - name: Build Zim
         run: zig build
 
-      - name: Test
+      - name: Test Hondo integration
+        run: zig build test-integration
+
+      - name: Test full suite
         run: zig build test
