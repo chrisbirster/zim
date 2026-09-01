@@ -1027,7 +1027,9 @@ pub const Editor = struct {
             if (start == end) return null;
             if (scope == .around) {
                 while (end < bytes.len and isSpaceByte(bytes[end])) end += 1;
-                if (end == at) while (start > 0 and isSpaceByte(bytes[start - 1])) start -= 1;
+                if (end == at) {
+                    while (start > 0 and isSpaceByte(bytes[start - 1])) start -= 1;
+                }
             }
             return .{ .start = start, .end = end };
         }
