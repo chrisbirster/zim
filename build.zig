@@ -4,6 +4,18 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const tree_sitter_dep = b.dependency("tree_sitter", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const tree_sitter = tree_sitter_dep.module("tree_sitter");
+    const tree_sitter_zig_dep = b.dependency("tree_sitter_zig", .{
+        .target = target,
+        .optimize = optimize,
+        .@"build-shared" = false,
+    });
+    const tree_sitter_zig = tree_sitter_zig_dep.artifact("tree-sitter-zig");
+
     const core_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/core_tests.zig"),
@@ -12,8 +24,24 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_core_tests = b.addRunArtifact(core_tests);
+
+    const language_test_module = b.createModule(.{
+        .root_source_file = b.path("src/language/tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    language_test_module.addImport("tree-sitter", tree_sitter);
+    language_test_module.linkLibrary(tree_sitter_zig);
+    const language_tests = b.addTest(.{
+        .root_module = language_test_module,
+    });
+    const run_language_tests = b.addRunArtifact(language_tests);
+    const language_test_step = b.step("test-language", "Run headless Tree-sitter language-core tests");
+    language_test_step.dependOn(&run_language_tests.step);
+
     const core_test_step = b.step("test-core", "Run editor/headless tests without Hondo");
     core_test_step.dependOn(&run_core_tests.step);
+    core_test_step.dependOn(&run_language_tests.step);
 
     const headless_only = b.option(
         bool,
@@ -71,5 +99,6 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run all Zim tests");
     test_step.dependOn(&run_core_tests.step);
+    test_step.dependOn(&run_language_tests.step);
     test_step.dependOn(&run_integration_tests.step);
 }

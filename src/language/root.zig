@@ -1,0 +1,27 @@
+pub const types = @import("types.zig");
+pub const queries = @import("queries.zig");
+pub const Registry = @import("registry.zig").Registry;
+pub const LanguageSpec = @import("registry.zig").LanguageSpec;
+pub const Service = @import("service.zig").Service;
+
+pub const BufferId = types.BufferId;
+pub const Revision = types.Revision;
+pub const Position = types.Position;
+pub const Range = types.Range;
+pub const Edit = types.Edit;
+pub const ParseSummary = types.ParseSummary;
+pub const ChangedRangeList = types.ChangedRangeList;
+pub const HighlightSpan = types.HighlightSpan;
+pub const HighlightList = types.HighlightList;
+pub const FoldRange = types.FoldRange;
+pub const FoldList = types.FoldList;
+pub const SymbolKind = types.SymbolKind;
+pub const Symbol = types.Symbol;
+pub const SymbolList = types.SymbolList;
+pub const StructuralObjectKind = types.StructuralObjectKind;
+pub const ObjectScope = types.ObjectScope;
+pub const TextObject = types.TextObject;
+pub const TextObjectList = types.TextObjectList;
+pub const MotionDirection = types.MotionDirection;
+pub const InjectionRegion = types.InjectionRegion;
+pub const InjectionList = types.InjectionList;

@@ -5,9 +5,17 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .hondo = .{
-            .url = "https://github.com/chrisbirster/hondo/archive/1b84818b4f58ab8c795aafb572b5b2c285820ca8.tar.gz",
+            .url = "https://github.com/chrisbirster/hondo/archive/99b0c64f880428f6357e63e9b57b8dffa853db06.tar.gz",
             .hash = "hondo-0.1.0-alpha.0-TaPY_z0sAwAShCsJPA9v4tyTeIEFCYyk2jPhz6P0cYZw",
             .lazy = true,
+        },
+        .tree_sitter = .{
+            .url = "git+https://github.com/tree-sitter/zig-tree-sitter#0cf58172e61f6fdd16f681cde42b4acb531a23db",
+            .hash = "tree_sitter-0.26.0-8heIf3CaAQDeVTQc0DMSBhbQAEx5aF-dTen4_LPxMgrv",
+        },
+        .tree_sitter_zig = .{
+            .url = "git+https://github.com/Nikutsuki/tree-sitter-zig#4ef1e6a14051f881f42254bf31e753e5f4c26031",
+            .hash = "tree_sitter_zig-1.1.2-41Vlhkd4XACCDI_YH7223Sm60zZc0U4rNM39DG2jGoU6",
         },
     },
     .paths = .{
