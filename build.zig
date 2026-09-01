@@ -4,49 +4,72 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
-        .name = "zim",
+    const core_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path("src/core_tests.zig"),
             .target = target,
             .optimize = optimize,
-            // .imports = &.{
-            //     // Here "zim" is the name you will use in your source code to
-            //     // import this module (e.g. `@import("zim")`). The name is
-            //     // repeated because you are allowed to rename your imports, which
-            //     // can be extremely useful in case of collisions (which can happen
-            //     // importing modules from different packages).
-            //     .{ .name = "zim", .module = mod },
-            // },
         }),
     });
+    const run_core_tests = b.addRunArtifact(core_tests);
+    const core_test_step = b.step("test-core", "Run editor/headless tests without Hondo");
+    core_test_step.dependOn(&run_core_tests.step);
 
-    b.installArtifact(exe);
-
-    const run_step = b.step("run", "Run the app");
-
-    const run_cmd = b.addRunArtifact(exe);
-    run_step.dependOn(&run_cmd.step);
-
-    run_cmd.step.dependOn(b.getInstallStep());
-
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
+    const headless_only = b.option(
+        bool,
+        "headless-only",
+        "Configure only the pure-Zig editor/headless test graph",
+    ) orelse false;
+    if (headless_only) {
+        b.default_step = core_test_step;
+        return;
     }
 
-    // Creates an executable that will run `test` blocks from the executable's
-    // root module. Note that test executables only test one module at a time,
-    // hence why we have to create two separate ones.
-    const exe_tests = b.addTest(.{
-        .root_module = exe.root_module,
+    const hondo_dep = b.lazyDependency("hondo", .{
+        .target = target,
+        .optimize = optimize,
+    }) orelse return;
+    const hondo = hondo_dep.module("hondo");
+
+    const build_ui = b.addSystemCommand(&.{ "node", "scripts/build-ui.mjs" });
+    const ui_step = b.step("ui", "Bundle the Solid/Hondo Zim application chrome");
+    ui_step.dependOn(&build_ui.step);
+
+    const app_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{.{ .name = "hondo", .module = hondo }},
     });
+    const exe = b.addExecutable(.{
+        .name = "zim",
+        .root_module = app_module,
+    });
+    exe.step.dependOn(&build_ui.step);
+    b.installArtifact(exe);
 
-    // A run step that will run the second test executable.
-    const run_exe_tests = b.addRunArtifact(exe_tests);
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| run_cmd.addArgs(args);
+    const run_step = b.step("run", "Run Zim");
+    run_step.dependOn(&run_cmd.step);
 
-    // A top level step for running all tests. dependOn can be called multiple
-    // times and since the two run steps do not depend on one another, this will
-    // make the two of them run in parallel.
-    const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_exe_tests.step);
+    const integration_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/integration_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{.{ .name = "hondo", .module = hondo }},
+        }),
+    });
+    integration_tests.step.dependOn(&build_ui.step);
+    const run_integration_tests = b.addRunArtifact(integration_tests);
+    const integration_test_step = b.step("test-integration", "Run Hondo/Zim integration tests");
+    integration_test_step.dependOn(&run_integration_tests.step);
+
+    const test_step = b.step("test", "Run all Zim tests");
+    test_step.dependOn(&run_core_tests.step);
+    test_step.dependOn(&run_integration_tests.step);
 }
