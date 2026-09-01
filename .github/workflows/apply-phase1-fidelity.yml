@@ -1,0 +1,28 @@
+name: Apply Phase 1 Fidelity
+
+on:
+  pull_request:
+    types: [reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.ref == 'feature/editor-core-parity-train'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/editor-core-parity-train
+          fetch-depth: 0
+      - name: Apply guarded editor transformation
+        run: python3 .github/apply_phase1_fidelity.py
+      - name: Commit generated editor fidelity changes
+        run: |
+          rm .github/apply_phase1_fidelity.py .github/workflows/apply-phase1-fidelity.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: finish classic Vim fidelity foundation"
+          git push origin HEAD:feature/editor-core-parity-train
