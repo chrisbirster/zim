@@ -36,6 +36,8 @@ pub const Key = union(enum) {
     ctrl_c,
     ctrl_r,
     ctrl_v,
+    ctrl_o,
+    ctrl_i,
     ctrl_h,
     ctrl_j,
     ctrl_k,
@@ -98,12 +100,46 @@ const TextObjectScope = enum {
 const FindPending = struct {
     till: bool,
     backwards: bool,
+    count: usize = 1,
 };
 
 const Range = struct {
     start: usize,
     end: usize,
     kind: RegisterKind = .characterwise,
+};
+
+const Location = struct {
+    buffer_id: BufferId,
+    offset: usize,
+};
+
+const FindRepeat = struct {
+    pending: FindPending,
+    target: u21,
+};
+
+const RegisterWrite = enum { yank, delete };
+
+const BlockInsert = struct {
+    first_line: usize,
+    last_line: usize,
+    column: usize,
+};
+
+pub const FoldRange = struct {
+    start_line: usize,
+    end_line: usize,
+};
+
+const FoldSource = enum { manual, provider };
+
+pub const Fold = struct {
+    window_id: WindowId,
+    start_line: usize,
+    end_line: usize,
+    closed: bool = false,
+    source: FoldSource = .manual,
 };
 
 pub const Editor = struct {
@@ -120,6 +156,28 @@ pub const Editor = struct {
     project_root: ?[]u8 = null,
 
     unnamed_register: Register = .{},
+    named_registers: [26]Register = [_]Register{.{}} ** 26,
+    numbered_registers: [10]Register = [_]Register{.{}} ** 10,
+    small_delete_register: Register = .{},
+    selected_register: ?u8 = null,
+    pending_register_select: bool = false,
+
+    macro_registers: [26]std.ArrayList(Key) = [_]std.ArrayList(Key){.empty} ** 26,
+    recording_macro: ?usize = null,
+    replaying_macro: bool = false,
+    last_macro: ?usize = null,
+    pending_macro_record: bool = false,
+    pending_macro_play: bool = false,
+
+    marks: [26]?Location = [_]?Location{null} ** 26,
+    pending_mark_set: bool = false,
+    pending_mark_line: bool = false,
+    pending_mark_exact: bool = false,
+    jump_list: std.ArrayList(Location) = .empty,
+    jump_index: usize = 0,
+    change_list: std.ArrayList(Location) = .empty,
+    change_index: usize = 0,
+
     search_pattern: std.ArrayList(u8) = .empty,
     command_line: std.ArrayList(u8) = .empty,
     command_prompt: CommandPrompt = .ex,
@@ -128,8 +186,14 @@ pub const Editor = struct {
     pending_operator: ?Operator = null,
     pending_text_object: ?TextObjectScope = null,
     pending_find: ?FindPending = null,
+    last_find: ?FindRepeat = null,
     pending_g: bool = false,
+    pending_z: bool = false,
     operator_count: usize = 1,
+
+    folds: std.ArrayList(Fold) = .empty,
+    block_insert: ?BlockInsert = null,
+    block_insert_text: std.ArrayList(u8) = .empty,
 
     undo_group_active: bool = false,
     recording_change: bool = false,
@@ -170,6 +234,14 @@ pub const Editor = struct {
         self.tabs.deinit(self.allocator);
         if (self.project_root) |root| self.allocator.free(root);
         self.unnamed_register.deinit(self.allocator);
+        for (&self.named_registers) |*register| register.deinit(self.allocator);
+        for (&self.numbered_registers) |*register| register.deinit(self.allocator);
+        self.small_delete_register.deinit(self.allocator);
+        for (&self.macro_registers) |*macro| macro.deinit(self.allocator);
+        self.jump_list.deinit(self.allocator);
+        self.change_list.deinit(self.allocator);
+        self.folds.deinit(self.allocator);
+        self.block_insert_text.deinit(self.allocator);
         self.search_pattern.deinit(self.allocator);
         self.command_line.deinit(self.allocator);
         self.current_change.deinit(self.allocator);
@@ -339,6 +411,15 @@ pub const Editor = struct {
 
     pub fn handleKey(self: *Editor, incoming: Key) anyerror!HandleResult {
         const key = self.resolveKey(incoming);
+        if (self.recording_macro) |macro_index| {
+            const stop_key = self.mode == .normal and switch (key) {
+                .codepoint => |cp| cp == 'q',
+                else => false,
+            };
+            if (!self.replaying_macro and !stop_key) {
+                try self.macro_registers[macro_index].append(self.allocator, key);
+            }
+        }
         if (self.recording_change and !self.replaying_change) {
             try self.current_change.append(self.allocator, key);
         }
@@ -508,6 +589,14 @@ pub const Editor = struct {
             .up => self.repeatMotion(.up, self.takeCount()),
             .down => self.repeatMotion(.down, self.takeCount()),
             .ctrl_r => try self.redo(),
+            .ctrl_o => blk: {
+                _ = self.jumpListMove(-1);
+                break :blk true;
+            },
+            .ctrl_i => blk: {
+                _ = self.jumpListMove(1);
+                break :blk true;
+            },
             .ctrl_v => blk: {
                 self.enterVisual(.visual_block);
                 break :blk true;
@@ -534,6 +623,57 @@ pub const Editor = struct {
     }
 
     fn handleNormalCodepoint(self: *Editor, cp: u21, key: Key) !bool {
+        if (self.pending_register_select) {
+            self.pending_register_select = false;
+            if (isRegisterName(cp)) {
+                self.selected_register = @intCast(cp);
+                return true;
+            }
+            return false;
+        }
+        if (self.pending_macro_record) {
+            self.pending_macro_record = false;
+            const index = letterIndex(cp) orelse return false;
+            self.macro_registers[index].items.len = 0;
+            self.recording_macro = index;
+            self.last_macro = index;
+            self.setStatus("recording @{c}", .{@as(u8, @intCast('a' + index))});
+            return true;
+        }
+        if (self.pending_macro_play) {
+            self.pending_macro_play = false;
+            if (cp == '@') {
+                if (self.last_macro) |index| try self.playMacro(index, self.takeCount());
+                return true;
+            }
+            const index = letterIndex(cp) orelse return false;
+            self.last_macro = index;
+            try self.playMacro(index, self.takeCount());
+            return true;
+        }
+        if (self.pending_mark_set) {
+            self.pending_mark_set = false;
+            const index = letterIndex(cp) orelse return false;
+            self.marks[index] = self.currentLocation();
+            return true;
+        }
+        if (self.pending_mark_line or self.pending_mark_exact) {
+            const linewise = self.pending_mark_line;
+            self.pending_mark_line = false;
+            self.pending_mark_exact = false;
+            const index = letterIndex(cp) orelse return false;
+            return self.jumpToMark(index, linewise);
+        }
+        if (self.pending_z) {
+            self.pending_z = false;
+            return self.handleFoldCommand(cp);
+        }
+        if (self.recording_macro != null and cp == 'q') {
+            self.recording_macro = null;
+            self.setStatus("recording stopped", .{});
+            return true;
+        }
+
         if (cp >= '1' and cp <= '9') {
             self.count_prefix = self.count_prefix * 10 + @as(usize, @intCast(cp - '0'));
             return true;
@@ -546,10 +686,15 @@ pub const Editor = struct {
         if (self.pending_g) {
             self.pending_g = false;
             if (cp == 'g') {
-                self.moveToLine(if (self.count_prefix == 0) 0 else self.takeCount() - 1);
+                const destination = if (self.count_prefix == 0) 0 else self.takeCount() - 1;
+                const from = self.currentLocation();
+                self.moveToLine(destination);
+                self.recordJump(from, self.currentLocation()) catch {};
                 self.count_prefix = 0;
                 return true;
             }
+            if (cp == ';') return self.changeListMove(-1);
+            if (cp == ',') return self.changeListMove(1);
         }
 
         const count = self.takeCount();
@@ -632,6 +777,7 @@ pub const Editor = struct {
             'p', 'P' => blk: {
                 try self.beginChange(key);
                 for (0..count) |_| try self.putRegister(cp == 'p');
+                self.selected_register = null;
                 self.finishUndoGroup();
                 try self.finishChange();
                 break :blk true;
@@ -670,21 +816,56 @@ pub const Editor = struct {
                 break :blk true;
             },
             'f' => blk: {
-                self.pending_find = .{ .till = false, .backwards = false };
+                self.pending_find = .{ .till = false, .backwards = false, .count = count };
                 break :blk true;
             },
             'F' => blk: {
-                self.pending_find = .{ .till = false, .backwards = true };
+                self.pending_find = .{ .till = false, .backwards = true, .count = count };
                 break :blk true;
             },
             't' => blk: {
-                self.pending_find = .{ .till = true, .backwards = false };
+                self.pending_find = .{ .till = true, .backwards = false, .count = count };
                 break :blk true;
             },
             'T' => blk: {
-                self.pending_find = .{ .till = true, .backwards = true };
+                self.pending_find = .{ .till = true, .backwards = true, .count = count };
                 break :blk true;
             },
+            ';' => blk: {
+                _ = self.repeatFind(false, count);
+                break :blk true;
+            },
+            ',' => blk: {
+                _ = self.repeatFind(true, count);
+                break :blk true;
+            },
+            '%' => blk: {
+                _ = self.matchDelimiter();
+                break :blk true;
+            },
+            '(' => blk: {
+                for (0..count) |_| self.moveSentence(false);
+                break :blk true;
+            },
+            ')' => blk: {
+                for (0..count) |_| self.moveSentence(true);
+                break :blk true;
+            },
+            '{' => blk: {
+                for (0..count) |_| self.moveParagraph(false);
+                break :blk true;
+            },
+            '}' => blk: {
+                for (0..count) |_| self.moveParagraph(true);
+                break :blk true;
+            },
+            '"' => blk: { self.pending_register_select = true; break :blk true; },
+            'q' => blk: { self.pending_macro_record = true; break :blk true; },
+            '@' => blk: { self.pending_macro_play = true; break :blk true; },
+            'm' => blk: { self.pending_mark_set = true; break :blk true; },
+            '\'' => blk: { self.pending_mark_line = true; break :blk true; },
+            '`' => blk: { self.pending_mark_exact = true; break :blk true; },
+            'z' => blk: { self.pending_z = true; break :blk true; },
             else => false,
         };
     }
@@ -692,6 +873,7 @@ pub const Editor = struct {
     fn handleInsert(self: *Editor, key: Key) !bool {
         return switch (key) {
             .escape => blk: {
+                if (self.block_insert != null) try self.finishBlockInsert();
                 self.mode = .normal;
                 self.finishUndoGroup();
                 if (self.recording_change) try self.finishChange();
@@ -703,7 +885,7 @@ pub const Editor = struct {
                 break :blk true;
             },
             .tab => blk: {
-                try self.insertBytes("  ");
+                if (self.block_insert != null) try self.insertBlockBytes("  ") else try self.insertBytes("  ");
                 break :blk true;
             },
             .left => self.moveLeft(),
@@ -712,7 +894,14 @@ pub const Editor = struct {
             .down => self.moveDown(),
             .codepoint => |cp| blk: {
                 if (cp < 0x20) break :blk false;
-                try self.insertCodepoint(cp);
+                if (self.block_insert != null) {
+                    var encoded: [4]u8 = undefined;
+                    const len = std.unicode.utf8Encode(cp, &encoded) catch 0;
+                    if (len == 0) break :blk false;
+                    try self.insertBlockBytes(encoded[0..len]);
+                } else {
+                    try self.insertCodepoint(cp);
+                }
                 break :blk true;
             },
             else => false,
@@ -738,7 +927,8 @@ pub const Editor = struct {
             return switch (key) {
                 .codepoint => |cp| blk: {
                     self.pending_text_object = null;
-                    const range = self.textObjectRange(scope, cp) orelse {
+                    const object_count = self.operator_count * self.takeCount();
+                    const range = self.textObjectRange(scope, cp, object_count) orelse {
                         self.resetOperator();
                         break :blk true;
                     };
@@ -751,6 +941,14 @@ pub const Editor = struct {
 
         return switch (key) {
             .codepoint => |cp| blk: {
+                if (cp >= '1' and cp <= '9') {
+                    self.count_prefix = self.count_prefix * 10 + @as(usize, @intCast(cp - '0'));
+                    break :blk true;
+                }
+                if (cp == '0' and self.count_prefix != 0) {
+                    self.count_prefix *= 10;
+                    break :blk true;
+                }
                 if (cp == 'i' or cp == 'a') {
                     self.pending_text_object = if (cp == 'i') .inner else .around;
                     break :blk true;
@@ -765,7 +963,8 @@ pub const Editor = struct {
                     try self.applyOperator(op, range);
                     break :blk true;
                 }
-                const range = self.motionRange(cp, self.operator_count) orelse {
+                const motion_count = self.operator_count * self.takeCount();
+                const range = self.motionRange(cp, motion_count) orelse {
                     self.resetOperator();
                     break :blk false;
                 };
@@ -800,8 +999,18 @@ pub const Editor = struct {
                     '$' => self.currentWindow().cursor = lineEnd(self.text(), self.cursor()),
                     'y', 'd', 'c' => {
                         const op: Operator = if (cp == 'y') .yank else if (cp == 'd') .delete else .change;
-                        const range = self.visualRange();
-                        try self.applyOperator(op, range);
+                        if (op != .yank) try self.beginChange(key);
+                        if (self.mode == .visual_block) {
+                            try self.applyVisualBlockOperator(op);
+                        } else {
+                            const range = self.visualRange();
+                            try self.applyOperator(op, range);
+                        }
+                    },
+                    'I', 'A' => {
+                        if (self.mode != .visual_block) break :blk false;
+                        try self.beginChange(key);
+                        try self.beginBlockInsert(cp == 'A');
                     },
                     else => break :blk false,
                 }
@@ -985,6 +1194,13 @@ pub const Editor = struct {
                 target = lineEnd(self.text(), start);
                 inclusive = false;
             },
+            '%' => target = matchingDelimiterOffset(self.text(), start) orelse return null,
+            '(', ')' => {
+                for (0..count) |_| target = sentenceBoundary(self.text(), target, cp == ')');
+            },
+            '{', '}' => {
+                for (0..count) |_| target = paragraphBoundary(self.text(), target, cp == '}');
+            },
             'j', 'k' => {
                 const original = self.cursor();
                 for (0..count) |_| {
@@ -1011,9 +1227,11 @@ pub const Editor = struct {
         return .{ .start = a, .end = b };
     }
 
-    fn textObjectRange(self: *const Editor, scope: TextObjectScope, cp: u21) ?Range {
+    fn textObjectRange(self: *const Editor, scope: TextObjectScope, cp: u21, count: usize) ?Range {
         const bytes = self.text();
         const at = self.cursor();
+        if (cp == 'p') return paragraphTextObject(bytes, at, scope, count);
+        if (cp == 's') return sentenceTextObject(bytes, at, scope, count);
         if (cp == 'w') {
             var start = at;
             if (start >= bytes.len and start > 0) start = previousCodepointStartSafe(bytes, start);
@@ -1060,7 +1278,8 @@ pub const Editor = struct {
     fn applyOperator(self: *Editor, op: Operator, range: Range) !void {
         switch (op) {
             .yank => {
-                try self.setRegister(range);
+                try self.setRegister(range, .yank);
+                self.selected_register = null;
                 self.setStatus("yanked", .{});
                 self.mode = .normal;
                 self.visual_anchor = null;
@@ -1095,7 +1314,8 @@ pub const Editor = struct {
         const start = @min(range.start, buffer.text.items.len);
         const end = @min(@max(range.end, start), buffer.text.items.len);
         if (start == end) return;
-        try self.setRegister(.{ .start = start, .end = end, .kind = range.kind });
+        try self.setRegister(.{ .start = start, .end = end, .kind = range.kind }, .delete);
+        self.selected_register = null;
         try self.ensureUndoSnapshot();
         const old_len = buffer.text.items.len;
         std.mem.copyForwards(
@@ -1108,25 +1328,73 @@ pub const Editor = struct {
         self.currentWindow().cursor = @min(start, buffer.text.items.len);
     }
 
-    fn setRegister(self: *Editor, range: Range) !void {
+    fn setRegister(self: *Editor, range: Range, write: RegisterWrite) !void {
         const bytes = self.text();
         const start = @min(range.start, bytes.len);
         const end = @min(@max(range.end, start), bytes.len);
-        try self.unnamed_register.set(self.allocator, bytes[start..end], range.kind);
+        try self.writeRegisterBytes(bytes[start..end], range.kind, write);
+    }
+
+    fn writeRegisterBytes(self: *Editor, bytes: []const u8, kind: RegisterKind, write: RegisterWrite) !void {
+        if (self.selected_register == '_') return;
+
+        if (self.selected_register) |name| {
+            if (letterIndex(name)) |index| {
+                if (name >= 'A' and name <= 'Z') {
+                    try self.named_registers[index].bytes.appendSlice(self.allocator, bytes);
+                    self.named_registers[index].kind = kind;
+                } else {
+                    try self.named_registers[index].set(self.allocator, bytes, kind);
+                }
+            }
+        }
+
+        try self.unnamed_register.set(self.allocator, bytes, kind);
+        switch (write) {
+            .yank => try self.numbered_registers[0].set(self.allocator, bytes, kind),
+            .delete => {
+                const large = kind == .linewise or std.mem.indexOfScalar(u8, bytes, '\n') != null;
+                if (large) {
+                    var index: usize = 9;
+                    while (index > 1) : (index -= 1) {
+                        try self.numbered_registers[index].set(
+                            self.allocator,
+                            self.numbered_registers[index - 1].bytes.items,
+                            self.numbered_registers[index - 1].kind,
+                        );
+                    }
+                    try self.numbered_registers[1].set(self.allocator, bytes, kind);
+                } else {
+                    try self.small_delete_register.set(self.allocator, bytes, kind);
+                }
+            },
+        }
+    }
+
+    fn readRegister(self: *Editor) *Register {
+        const selected = self.selected_register orelse return &self.unnamed_register;
+        if (letterIndex(selected)) |index| return &self.named_registers[index];
+        if (selected >= '0' and selected <= '9') return &self.numbered_registers[selected - '0'];
+        if (selected == '-') return &self.small_delete_register;
+        return &self.unnamed_register;
     }
 
     fn putRegister(self: *Editor, after: bool) !void {
-        if (self.unnamed_register.bytes.items.len == 0) return;
+        const register = self.readRegister();
+        if (register.bytes.items.len == 0) return;
+        const register_kind = register.kind;
+        const payload = try self.allocator.dupe(u8, register.bytes.items);
+        defer self.allocator.free(payload);
         try self.ensureUndoSnapshot();
         const buffer = self.currentBuffer();
         var insertion = self.cursor();
-        if (self.unnamed_register.kind == .linewise) {
+        if (register_kind == .linewise) {
             const end = lineEnd(buffer.text.items, insertion);
             insertion = if (after and end < buffer.text.items.len) end + 1 else lineStartAt(buffer.text.items, insertion);
         } else if (after and insertion < buffer.text.items.len) {
             insertion = nextCodepointStart(buffer.text.items, insertion);
         }
-        try insertSliceAt(buffer, self.allocator, insertion, self.unnamed_register.bytes.items);
+        try insertSliceAt(buffer, self.allocator, insertion, payload);
         buffer.markChanged();
         self.currentWindow().cursor = @min(insertion, buffer.text.items.len);
     }
@@ -1250,32 +1518,51 @@ pub const Editor = struct {
     }
 
     fn finishFind(self: *Editor, pending: FindPending, cp: u21) bool {
+        const moved = self.performFind(pending, cp);
+        if (moved) self.last_find = .{ .pending = pending, .target = cp };
+        return true;
+    }
+
+    fn performFind(self: *Editor, pending: FindPending, cp: u21) bool {
         if (cp > 0x7f) return false;
         const target: u8 = @intCast(cp);
-        const bytes = self.text();
-        const current_cursor = self.cursor();
-        const start = lineStartAt(bytes, current_cursor);
-        const end = lineEnd(bytes, current_cursor);
-        if (pending.backwards) {
-            if (current_cursor <= start) return true;
-            var index = current_cursor;
-            while (index > start) {
-                index -= 1;
-                if (bytes[index] == target) {
-                    self.currentWindow().cursor = if (pending.till) @min(index + 1, current_cursor) else index;
-                    return true;
+        var remaining = pending.count;
+        var cursor = self.cursor();
+        while (remaining > 0) : (remaining -= 1) {
+            const bytes = self.text();
+            const start_line = lineStartAt(bytes, cursor);
+            const end_line = lineEnd(bytes, cursor);
+            var found: ?usize = null;
+            if (pending.backwards) {
+                if (cursor <= start_line) return false;
+                var index = cursor;
+                while (index > start_line) {
+                    index -= 1;
+                    if (bytes[index] == target) { found = index; break; }
+                }
+            } else {
+                var index = @min(cursor + 1, end_line);
+                while (index < end_line) : (index += 1) {
+                    if (bytes[index] == target) { found = index; break; }
                 }
             }
+            const match = found orelse return false;
+            cursor = match;
+        }
+        if (pending.till) {
+            self.currentWindow().cursor = if (pending.backwards) nextCodepointStart(self.text(), cursor) else previousCodepointStartSafe(self.text(), cursor);
         } else {
-            var index = @min(current_cursor + 1, end);
-            while (index < end) : (index += 1) {
-                if (bytes[index] == target) {
-                    self.currentWindow().cursor = if (pending.till and index > 0) index - 1 else index;
-                    return true;
-                }
-            }
+            self.currentWindow().cursor = cursor;
         }
         return true;
+    }
+
+    fn repeatFind(self: *Editor, reverse: bool, count: usize) bool {
+        const repeat = self.last_find orelse return false;
+        var pending = repeat.pending;
+        pending.backwards = if (reverse) !pending.backwards else pending.backwards;
+        pending.count = count;
+        return self.performFind(pending, repeat.target);
     }
 
     fn search(self: *Editor, forward: bool) bool {
@@ -1285,7 +1572,9 @@ pub const Editor = struct {
         if (forward) {
             const from = @min(self.cursor() +| 1, bytes.len);
             if (std.mem.indexOfPos(u8, bytes, from, pattern)) |index| {
+                const origin = self.currentLocation();
                 self.currentWindow().cursor = index;
+                self.recordJump(origin, self.currentLocation()) catch {};
                 return true;
             }
             if (std.mem.indexOf(u8, bytes[0..from], pattern)) |index| {
@@ -1295,7 +1584,9 @@ pub const Editor = struct {
         } else {
             const upto = @min(self.cursor(), bytes.len);
             if (std.mem.lastIndexOf(u8, bytes[0..upto], pattern)) |index| {
+                const origin = self.currentLocation();
                 self.currentWindow().cursor = index;
+                self.recordJump(origin, self.currentLocation()) catch {};
                 return true;
             }
             if (std.mem.lastIndexOf(u8, bytes, pattern)) |index| {
@@ -1309,6 +1600,7 @@ pub const Editor = struct {
 
     fn ensureUndoSnapshot(self: *Editor) !void {
         if (self.undo_group_active) return;
+        try self.recordChangeLocation(self.currentLocation());
         try self.currentBuffer().recordUndo(self.allocator, self.cursor());
         self.undo_group_active = true;
     }
@@ -1380,6 +1672,14 @@ pub const Editor = struct {
         self.resetOperator();
         self.pending_find = null;
         self.pending_g = false;
+        self.pending_z = false;
+        self.pending_register_select = false;
+        self.pending_macro_record = false;
+        self.pending_macro_play = false;
+        self.pending_mark_set = false;
+        self.pending_mark_line = false;
+        self.pending_mark_exact = false;
+        self.selected_register = null;
         self.count_prefix = 0;
     }
 
@@ -1391,6 +1691,267 @@ pub const Editor = struct {
             return;
         };
         self.status_len = rendered.len;
+    }
+
+    fn currentLocation(self: *const Editor) Location {
+        return .{ .buffer_id = self.currentWindowConst().buffer_id, .offset = self.cursor() };
+    }
+
+    fn locationsEqual(a: Location, b: Location) bool {
+        return a.buffer_id == b.buffer_id and a.offset == b.offset;
+    }
+
+    fn goToLocation(self: *Editor, location: Location, linewise: bool) bool {
+        const buffer = self.bufferById(location.buffer_id) orelse return false;
+        self.currentWindow().buffer_id = location.buffer_id;
+        const offset = @min(location.offset, buffer.text.items.len);
+        self.currentWindow().cursor = if (linewise)
+            firstNonBlank(buffer.text.items, lineStartAt(buffer.text.items, offset))
+        else
+            offset;
+        return true;
+    }
+
+    fn recordJump(self: *Editor, origin: Location, destination: Location) !void {
+        if (locationsEqual(origin, destination)) return;
+        if (self.jump_index < self.jump_list.items.len) self.jump_list.items.len = self.jump_index;
+        if (self.jump_list.items.len == 0 or !locationsEqual(self.jump_list.items[self.jump_list.items.len - 1], origin)) {
+            try self.jump_list.append(self.allocator, origin);
+        }
+        try self.jump_list.append(self.allocator, destination);
+        self.jump_index = self.jump_list.items.len - 1;
+    }
+
+    fn jumpListMove(self: *Editor, direction: i8) bool {
+        if (self.jump_list.items.len == 0) return false;
+        if (direction < 0) {
+            if (self.jump_index == 0) return false;
+            self.jump_index -= 1;
+        } else {
+            if (self.jump_index + 1 >= self.jump_list.items.len) return false;
+            self.jump_index += 1;
+        }
+        return self.goToLocation(self.jump_list.items[self.jump_index], false);
+    }
+
+    fn recordChangeLocation(self: *Editor, location: Location) !void {
+        if (self.change_index < self.change_list.items.len) self.change_list.items.len = self.change_index;
+        if (self.change_list.items.len == 0 or !locationsEqual(self.change_list.items[self.change_list.items.len - 1], location)) {
+            try self.change_list.append(self.allocator, location);
+        }
+        self.change_index = self.change_list.items.len;
+    }
+
+    fn changeListMove(self: *Editor, direction: i8) bool {
+        if (self.change_list.items.len == 0) return false;
+        if (direction < 0) {
+            if (self.change_index == 0) return false;
+            self.change_index -= 1;
+        } else {
+            if (self.change_index >= self.change_list.items.len) return false;
+            self.change_index += 1;
+            if (self.change_index >= self.change_list.items.len) return false;
+        }
+        return self.goToLocation(self.change_list.items[self.change_index], false);
+    }
+
+    fn jumpToMark(self: *Editor, index: usize, linewise: bool) bool {
+        const destination = self.marks[index] orelse return false;
+        const origin = self.currentLocation();
+        if (!self.goToLocation(destination, linewise)) return false;
+        self.recordJump(origin, self.currentLocation()) catch {};
+        return true;
+    }
+
+    fn playMacro(self: *Editor, index: usize, count: usize) !void {
+        if (self.macro_registers[index].items.len == 0) return;
+        const keys = try self.allocator.dupe(Key, self.macro_registers[index].items);
+        defer self.allocator.free(keys);
+        self.replaying_macro = true;
+        defer self.replaying_macro = false;
+        for (0..count) |_| for (keys) |macro_key| _ = try self.handleKey(macro_key);
+    }
+
+    fn matchDelimiter(self: *Editor) bool {
+        const destination = matchingDelimiterOffset(self.text(), self.cursor()) orelse return false;
+        const origin = self.currentLocation();
+        self.currentWindow().cursor = destination;
+        self.recordJump(origin, self.currentLocation()) catch {};
+        return true;
+    }
+
+    fn moveSentence(self: *Editor, forward: bool) void {
+        self.currentWindow().cursor = sentenceBoundary(self.text(), self.cursor(), forward);
+    }
+
+    fn moveParagraph(self: *Editor, forward: bool) void {
+        self.currentWindow().cursor = paragraphBoundary(self.text(), self.cursor(), forward);
+    }
+
+    fn blockGeometry(self: *const Editor) struct { first_line: usize, last_line: usize, left_column: usize, right_column: usize } {
+        const anchor = self.visual_anchor orelse self.cursor();
+        const a = positionForOffset(self.text(), anchor);
+        const b = positionForOffset(self.text(), self.cursor());
+        return .{
+            .first_line = @min(a.line, b.line) - 1,
+            .last_line = @max(a.line, b.line) - 1,
+            .left_column = @min(a.column, b.column) - 1,
+            .right_column = @max(a.column, b.column) - 1,
+        };
+    }
+
+    fn collectBlockRanges(self: *const Editor, allocator: std.mem.Allocator) !std.ArrayList(Range) {
+        const geometry = self.blockGeometry();
+        var ranges: std.ArrayList(Range) = .empty;
+        errdefer ranges.deinit(allocator);
+        for (geometry.first_line..geometry.last_line + 1) |line| {
+            const start = offsetForLineCodepointColumn(self.text(), line, geometry.left_column);
+            const line_end = lineEnd(self.text(), start);
+            if (start >= line_end) continue;
+            const right = offsetForLineCodepointColumn(self.text(), line, geometry.right_column);
+            const end = if (right < line_end) nextCodepointStart(self.text(), right) else line_end;
+            try ranges.append(allocator, .{ .start = start, .end = @max(start, end), .kind = .blockwise });
+        }
+        return ranges;
+    }
+
+    fn applyVisualBlockOperator(self: *Editor, op: Operator) !void {
+        var ranges = try self.collectBlockRanges(self.allocator);
+        defer ranges.deinit(self.allocator);
+        if (ranges.items.len == 0) return;
+
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(self.allocator);
+        for (ranges.items, 0..) |range, index| {
+            if (index != 0) try payload.append(self.allocator, '\n');
+            try payload.appendSlice(self.allocator, self.text()[range.start..range.end]);
+        }
+        try self.writeRegisterBytes(payload.items, .blockwise, if (op == .yank) .yank else .delete);
+        self.selected_register = null;
+
+        if (op == .yank) {
+            self.mode = .normal;
+            self.visual_anchor = null;
+            self.setStatus("yanked block", .{});
+            return;
+        }
+
+        try self.ensureUndoSnapshot();
+        var index = ranges.items.len;
+        while (index > 0) {
+            index -= 1;
+            self.deleteRawRange(ranges.items[index]);
+        }
+        self.currentBuffer().markChanged();
+        self.currentWindow().cursor = @min(ranges.items[0].start, self.text().len);
+        const geometry = self.blockGeometry();
+        self.visual_anchor = null;
+        if (op == .change) {
+            self.block_insert = .{ .first_line = geometry.first_line, .last_line = geometry.last_line, .column = geometry.left_column };
+            self.block_insert_text.items.len = 0;
+            self.mode = .insert;
+        } else {
+            self.mode = .normal;
+            self.finishUndoGroup();
+            if (self.recording_change) try self.finishChange();
+        }
+    }
+
+    fn deleteRawRange(self: *Editor, range: Range) void {
+        const buffer = self.currentBuffer();
+        const start = @min(range.start, buffer.text.items.len);
+        const end = @min(@max(range.end, start), buffer.text.items.len);
+        if (start == end) return;
+        const old_len = buffer.text.items.len;
+        std.mem.copyForwards(u8, buffer.text.items[start .. old_len - (end - start)], buffer.text.items[end..old_len]);
+        buffer.text.items.len = old_len - (end - start);
+    }
+
+    fn beginBlockInsert(self: *Editor, append_right: bool) !void {
+        const geometry = self.blockGeometry();
+        const column = geometry.left_column + (if (append_right) geometry.right_column - geometry.left_column + 1 else 0);
+        self.block_insert = .{ .first_line = geometry.first_line, .last_line = geometry.last_line, .column = column };
+        self.block_insert_text.items.len = 0;
+        self.currentWindow().cursor = offsetForLineCodepointColumn(self.text(), geometry.first_line, column);
+        self.visual_anchor = null;
+        self.mode = .insert;
+    }
+
+    fn insertBlockBytes(self: *Editor, bytes: []const u8) !void {
+        try self.insertBytes(bytes);
+        try self.block_insert_text.appendSlice(self.allocator, bytes);
+    }
+
+    fn finishBlockInsert(self: *Editor) !void {
+        const block = self.block_insert orelse return;
+        self.block_insert = null;
+        if (self.block_insert_text.items.len == 0) return;
+        const payload = try self.allocator.dupe(u8, self.block_insert_text.items);
+        defer self.allocator.free(payload);
+        for (block.first_line + 1..block.last_line + 1) |line| {
+            const insertion = offsetForLineCodepointColumn(self.text(), line, block.column);
+            try insertSliceAt(self.currentBuffer(), self.allocator, insertion, payload);
+        }
+        self.currentBuffer().markChanged();
+        self.block_insert_text.items.len = 0;
+    }
+
+    pub fn addManualFold(self: *Editor, start_line: usize, end_line: usize) !void {
+        if (end_line <= start_line) return;
+        try self.folds.append(self.allocator, .{
+            .window_id = self.currentWindow().id,
+            .start_line = start_line,
+            .end_line = end_line,
+            .closed = false,
+            .source = .manual,
+        });
+    }
+
+    pub fn replaceProviderFolds(self: *Editor, ranges: []const FoldRange) !void {
+        const window_id = self.currentWindow().id;
+        var write: usize = 0;
+        for (self.folds.items) |fold| {
+            if (!(fold.window_id == window_id and fold.source == .provider)) {
+                self.folds.items[write] = fold;
+                write += 1;
+            }
+        }
+        self.folds.items.len = write;
+        for (ranges) |range| {
+            if (range.end_line <= range.start_line) continue;
+            try self.folds.append(self.allocator, .{
+                .window_id = window_id,
+                .start_line = range.start_line,
+                .end_line = range.end_line,
+                .source = .provider,
+            });
+        }
+    }
+
+    pub fn lineHiddenByFold(self: *const Editor, window_id: WindowId, line: usize) bool {
+        for (self.folds.items) |fold| {
+            if (fold.window_id == window_id and fold.closed and line > fold.start_line and line <= fold.end_line) return true;
+        }
+        return false;
+    }
+
+    fn handleFoldCommand(self: *Editor, cp: u21) bool {
+        const line = self.cursorPosition().line - 1;
+        switch (cp) {
+            'M' => { for (self.folds.items) |*fold| if (fold.window_id == self.currentWindow().id) fold.closed = true; return true; },
+            'R' => { for (self.folds.items) |*fold| if (fold.window_id == self.currentWindow().id) fold.closed = false; return true; },
+            'a', 'c', 'o' => {
+                var best: ?*Fold = null;
+                for (self.folds.items) |*fold| {
+                    if (fold.window_id != self.currentWindow().id or line < fold.start_line or line > fold.end_line) continue;
+                    if (best == null or (fold.end_line - fold.start_line) < (best.?.end_line - best.?.start_line)) best = fold;
+                }
+                const fold = best orelse return true;
+                if (cp == 'a') fold.closed = !fold.closed else fold.closed = cp == 'c';
+                return true;
+            },
+            else => return false,
+        }
     }
 
     fn allocateBufferId(self: *Editor) BufferId {
@@ -1557,6 +2118,176 @@ fn wordEndOffset(bytes: []const u8, cursor: usize) usize {
     return last;
 }
 
+fn letterIndex(cp: u21) ?usize {
+    if (cp >= 'a' and cp <= 'z') return @intCast(cp - 'a');
+    if (cp >= 'A' and cp <= 'Z') return @intCast(cp - 'A');
+    return null;
+}
+
+fn isRegisterName(cp: u21) bool {
+    return letterIndex(cp) != null or (cp >= '0' and cp <= '9') or cp == '-' or cp == '_';
+}
+
+fn offsetForLineCodepointColumn(bytes: []const u8, line_index: usize, column: usize) usize {
+    const start = offsetForLineColumn(bytes, line_index, 0);
+    const end = lineEnd(bytes, start);
+    var cursor = start;
+    var current: usize = 0;
+    while (cursor < end and current < column) : (current += 1) cursor = nextCodepointStart(bytes, cursor);
+    return cursor;
+}
+
+fn isBlankLine(bytes: []const u8, start: usize) bool {
+    const end = lineEnd(bytes, start);
+    for (bytes[start..end]) |byte| if (byte != ' ' and byte != '\t' and byte != '\r') return false;
+    return true;
+}
+
+fn nextLineStart(bytes: []const u8, start: usize) usize {
+    const end = lineEnd(bytes, start);
+    return if (end < bytes.len) end + 1 else bytes.len;
+}
+
+fn paragraphBounds(bytes: []const u8, at: usize) ?Range {
+    if (bytes.len == 0) return null;
+    var line_start = lineStartAt(bytes, @min(at, bytes.len));
+    while (line_start < bytes.len and isBlankLine(bytes, line_start)) line_start = nextLineStart(bytes, line_start);
+    if (line_start >= bytes.len) return null;
+    var start = line_start;
+    while (start > 0) {
+        const previous_end = start - 1;
+        const previous_start = lineStartAt(bytes, previous_end);
+        if (isBlankLine(bytes, previous_start)) break;
+        start = previous_start;
+    }
+    var end = line_start;
+    while (end < bytes.len and !isBlankLine(bytes, end)) end = nextLineStart(bytes, end);
+    return .{ .start = start, .end = end, .kind = .linewise };
+}
+
+fn paragraphTextObject(bytes: []const u8, at: usize, scope: TextObjectScope, count: usize) ?Range {
+    var current = paragraphBounds(bytes, at) orelse return null;
+    var remaining = if (count == 0) 1 else count;
+    while (remaining > 1) : (remaining -= 1) {
+        var probe = current.end;
+        while (probe < bytes.len and isBlankLine(bytes, probe)) probe = nextLineStart(bytes, probe);
+        const next = paragraphBounds(bytes, probe) orelse break;
+        current.end = next.end;
+    }
+    if (scope == .around) {
+        var end = current.end;
+        while (end < bytes.len and isBlankLine(bytes, end)) end = nextLineStart(bytes, end);
+        if (end != current.end) current.end = end else {
+            var start = current.start;
+            while (start > 0) {
+                const previous_start = lineStartAt(bytes, start - 1);
+                if (!isBlankLine(bytes, previous_start)) break;
+                start = previous_start;
+            }
+            current.start = start;
+        }
+    }
+    return current;
+}
+
+fn isSentenceTerminator(byte: u8) bool { return byte == '.' or byte == '!' or byte == '?'; }
+
+fn sentenceStart(bytes: []const u8, at: usize) usize {
+    var index = @min(at, bytes.len);
+    while (index > 0) {
+        const previous = previousCodepointStartSafe(bytes, index);
+        if (isSentenceTerminator(bytes[previous])) {
+            var probe = nextCodepointStart(bytes, previous);
+            if (probe >= bytes.len or isSpaceByte(bytes[probe])) {
+                while (probe < bytes.len and isSpaceByte(bytes[probe])) probe = nextCodepointStart(bytes, probe);
+                return probe;
+            }
+        }
+        index = previous;
+    }
+    while (index < bytes.len and isSpaceByte(bytes[index])) index = nextCodepointStart(bytes, index);
+    return index;
+}
+
+fn sentenceEnd(bytes: []const u8, start: usize) usize {
+    var index = @min(start, bytes.len);
+    while (index < bytes.len) {
+        if (isSentenceTerminator(bytes[index])) return nextCodepointStart(bytes, index);
+        index = nextCodepointStart(bytes, index);
+    }
+    return bytes.len;
+}
+
+fn sentenceTextObject(bytes: []const u8, at: usize, scope: TextObjectScope, count: usize) ?Range {
+    if (bytes.len == 0) return null;
+    const start = sentenceStart(bytes, at);
+    if (start >= bytes.len) return null;
+    var end = sentenceEnd(bytes, start);
+    var remaining = if (count == 0) 1 else count;
+    while (remaining > 1 and end < bytes.len) : (remaining -= 1) {
+        var next = end;
+        while (next < bytes.len and isSpaceByte(bytes[next])) next = nextCodepointStart(bytes, next);
+        end = sentenceEnd(bytes, next);
+    }
+    if (scope == .around) while (end < bytes.len and isSpaceByte(bytes[end])) end = nextCodepointStart(bytes, end);
+    return .{ .start = start, .end = end };
+}
+
+fn sentenceBoundary(bytes: []const u8, at: usize, forward: bool) usize {
+    if (forward) {
+        var end = sentenceEnd(bytes, @min(at +| 1, bytes.len));
+        while (end < bytes.len and isSpaceByte(bytes[end])) end = nextCodepointStart(bytes, end);
+        return end;
+    }
+    const start = sentenceStart(bytes, at);
+    if (start == 0) return 0;
+    return sentenceStart(bytes, previousCodepointStartSafe(bytes, start));
+}
+
+fn paragraphBoundary(bytes: []const u8, at: usize, forward: bool) usize {
+    if (forward) {
+        const current = paragraphBounds(bytes, at) orelse return bytes.len;
+        var probe = current.end;
+        while (probe < bytes.len and isBlankLine(bytes, probe)) probe = nextLineStart(bytes, probe);
+        return probe;
+    }
+    const current = paragraphBounds(bytes, at) orelse return 0;
+    if (current.start == 0) return 0;
+    var probe = current.start;
+    while (probe > 0) {
+        const previous = lineStartAt(bytes, probe - 1);
+        if (!isBlankLine(bytes, previous)) return paragraphBounds(bytes, previous).?.start;
+        probe = previous;
+    }
+    return 0;
+}
+
+fn matchingDelimiterOffset(bytes: []const u8, at: usize) ?usize {
+    if (bytes.len == 0) return null;
+    var cursor = @min(at, bytes.len - 1);
+    const line_end = lineEnd(bytes, cursor);
+    while (cursor < line_end and std.mem.indexOfScalar(u8, "()[]{}", bytes[cursor]) == null) cursor += 1;
+    if (cursor >= bytes.len or std.mem.indexOfScalar(u8, "()[]{}", bytes[cursor]) == null) return null;
+    const ch = bytes[cursor];
+    const pair: u8 = switch (ch) { '(' => ')', '[' => ']', '{' => '}', ')' => '(', ']' => '[', '}' => '{', else => return null };
+    const forward = ch == '(' or ch == '[' or ch == '{';
+    var depth: usize = 1;
+    var index = cursor;
+    while (true) {
+        if (forward) {
+            if (index + 1 >= bytes.len) return null;
+            index += 1;
+        } else {
+            if (index == 0) return null;
+            index -= 1;
+        }
+        if (bytes[index] == ch) depth += 1 else if (bytes[index] == pair) {
+            depth -= 1;
+            if (depth == 0) return index;
+        }
+    }
+}
+
 const DelimiterPair = struct { open: u8, close: u8 };
 
 fn delimiterPair(cp: u21) ?DelimiterPair {
@@ -1672,4 +2403,111 @@ test "single-key maps are configurable without a terminal dependency" {
     try editor.map(.normal, 'H', 'l');
     _ = try editor.handleKey(.{ .codepoint = 'H' });
     try std.testing.expectEqual(@as(usize, 1), editor.cursor());
+}
+
+
+test "classic paragraph sentence objects and operator counts compose" {
+    var editor = try Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    try editor.setText("one two. Three four!\n\nalpha beta\ngamma\n\ndelta\n");
+    _ = try editor.handleKey(.{ .codepoint = 'd' });
+    _ = try editor.handleKey(.{ .codepoint = 'a' });
+    _ = try editor.handleKey(.{ .codepoint = 's' });
+    try std.testing.expect(std.mem.startsWith(u8, editor.text(), "Three four!"));
+    try editor.setText("p1\n\np2\n\np3\n");
+    _ = try editor.handleKey(.{ .codepoint = '2' });
+    _ = try editor.handleKey(.{ .codepoint = 'd' });
+    _ = try editor.handleKey(.{ .codepoint = 'a' });
+    _ = try editor.handleKey(.{ .codepoint = 'p' });
+    try std.testing.expectEqualStrings("p3\n", editor.text());
+}
+
+test "classic find repeat percent and operator post-counts behave like Vim" {
+    var editor = try Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    try editor.setText("a,b,c,d (x[y]z) words here now");
+    _ = try editor.handleKey(.{ .codepoint = '3' });
+    _ = try editor.handleKey(.{ .codepoint = 'f' });
+    _ = try editor.handleKey(.{ .codepoint = ',' });
+    try std.testing.expectEqual(@as(usize, 5), editor.cursor());
+    _ = try editor.handleKey(.{ .codepoint = ';' });
+    try std.testing.expectEqual(@as(usize, 7), editor.cursor());
+    _ = try editor.handleKey(.{ .codepoint = ',' });
+    try std.testing.expectEqual(@as(usize, 5), editor.cursor());
+    editor.setCursor(8);
+    _ = try editor.handleKey(.{ .codepoint = '%' });
+    try std.testing.expect(editor.cursor() > 8);
+    editor.setCursor(editor.text().len - "words here now".len);
+    _ = try editor.handleKey(.{ .codepoint = 'd' });
+    _ = try editor.handleKey(.{ .codepoint = '2' });
+    _ = try editor.handleKey(.{ .codepoint = 'w' });
+    try std.testing.expect(std.mem.endsWith(u8, editor.text(), "now"));
+}
+
+test "named numbered yank small-delete and black-hole registers are distinct" {
+    var editor = try Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    try editor.setText("alpha beta\nsecond\n");
+    _ = try editor.handleKey(.{ .codepoint = '"' }); _ = try editor.handleKey(.{ .codepoint = 'a' });
+    _ = try editor.handleKey(.{ .codepoint = 'y' }); _ = try editor.handleKey(.{ .codepoint = 'i' }); _ = try editor.handleKey(.{ .codepoint = 'w' });
+    try std.testing.expectEqualStrings("alpha", editor.named_registers[0].bytes.items);
+    try std.testing.expectEqualStrings("alpha", editor.numbered_registers[0].bytes.items);
+    _ = try editor.handleKey(.{ .codepoint = 'x' });
+    try std.testing.expect(editor.small_delete_register.bytes.items.len > 0);
+    const unnamed_before = try std.testing.allocator.dupe(u8, editor.unnamed_register.bytes.items); defer std.testing.allocator.free(unnamed_before);
+    _ = try editor.handleKey(.{ .codepoint = '"' }); _ = try editor.handleKey(.{ .codepoint = '_' });
+    _ = try editor.handleKey(.{ .codepoint = 'd' }); _ = try editor.handleKey(.{ .codepoint = 'd' });
+    try std.testing.expectEqualStrings(unnamed_before, editor.unnamed_register.bytes.items);
+}
+
+test "macros marks jumplist and changelist provide familiar navigation" {
+    var editor = try Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    try editor.setText("abc\ndef\nghi\n");
+    _ = try editor.handleKey(.{ .codepoint = 'q' }); _ = try editor.handleKey(.{ .codepoint = 'a' });
+    _ = try editor.handleKey(.{ .codepoint = 'l' }); _ = try editor.handleKey(.{ .codepoint = 'l' });
+    _ = try editor.handleKey(.{ .codepoint = 'q' });
+    editor.setCursor(0);
+    _ = try editor.handleKey(.{ .codepoint = '@' }); _ = try editor.handleKey(.{ .codepoint = 'a' });
+    try std.testing.expectEqual(@as(usize, 2), editor.cursor());
+    _ = try editor.handleKey(.{ .codepoint = 'm' }); _ = try editor.handleKey(.{ .codepoint = 'a' });
+    editor.setCursor(editor.text().len);
+    _ = try editor.handleKey(.{ .codepoint = '`' }); _ = try editor.handleKey(.{ .codepoint = 'a' });
+    try std.testing.expectEqual(@as(usize, 2), editor.cursor());
+    _ = try editor.handleKey(.ctrl_o);
+    try std.testing.expect(editor.cursor() > 2);
+    _ = try editor.handleKey(.ctrl_i);
+    try std.testing.expectEqual(@as(usize, 2), editor.cursor());
+}
+
+test "visual block delete and insert are rectangular and UTF-8 safe" {
+    var editor = try Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    try editor.setText("aλc\ndλf\ngλi\n");
+    editor.setCursorFromLineColumn(0, 1);
+    _ = try editor.handleKey(.ctrl_v);
+    _ = try editor.handleKey(.{ .codepoint = 'j' });
+    _ = try editor.handleKey(.{ .codepoint = 'j' });
+    _ = try editor.handleKey(.{ .codepoint = 'd' });
+    try std.testing.expectEqualStrings("ac\ndf\ngi\n", editor.text());
+    editor.setCursorFromLineColumn(0, 1);
+    _ = try editor.handleKey(.ctrl_v); _ = try editor.handleKey(.{ .codepoint = 'j' }); _ = try editor.handleKey(.{ .codepoint = 'j' });
+    _ = try editor.handleKey(.{ .codepoint = 'I' }); _ = try editor.handleKey(.{ .codepoint = 'X' }); _ = try editor.handleKey(.escape);
+    try std.testing.expectEqualStrings("aXc\ndXf\ngXi\n", editor.text());
+}
+
+test "fold commands own visibility independently of providers" {
+    var editor = try Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    try editor.setText("one\ntwo\nthree\nfour\n");
+    try editor.addManualFold(0, 2);
+    _ = try editor.handleKey(.{ .codepoint = 'z' }); _ = try editor.handleKey(.{ .codepoint = 'c' });
+    try std.testing.expect(editor.lineHiddenByFold(editor.currentWindow().id, 1));
+    _ = try editor.handleKey(.{ .codepoint = 'z' }); _ = try editor.handleKey(.{ .codepoint = 'o' });
+    try std.testing.expect(!editor.lineHiddenByFold(editor.currentWindow().id, 1));
+    try editor.replaceProviderFolds(&.{.{ .start_line = 1, .end_line = 3 }});
+    _ = try editor.handleKey(.{ .codepoint = 'z' }); _ = try editor.handleKey(.{ .codepoint = 'M' });
+    try std.testing.expect(editor.lineHiddenByFold(editor.currentWindow().id, 2));
+    _ = try editor.handleKey(.{ .codepoint = 'z' }); _ = try editor.handleKey(.{ .codepoint = 'R' });
+    try std.testing.expect(!editor.lineHiddenByFold(editor.currentWindow().id, 2));
 }

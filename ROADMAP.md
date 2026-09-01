@@ -261,3 +261,14 @@ After step 10, Zim should be a crude but real editor. Only then broaden the Vim 
 - Do not promise Neovim plugin/API compatibility without an explicit compatibility project.
 - Prefer simple buffer/rendering structures until benchmarks justify more complex ones.
 - Keep `main` buildable; substantial work lands through focused branches/PRs.
+
+
+### Editor fidelity convergence
+
+- [x] paragraph/sentence classic text objects
+- [x] `%`, find-repeat, sentence/paragraph motions and operator/count composition
+- [x] named/numbered/yank/small-delete/black-hole register model
+- [x] macros, marks, jumplist and changelist foundation
+- [x] rectangular Visual Block edit/yank/delete/change/insert semantics
+- [x] provider-independent fold state and `za/zc/zo/zM/zR` commands
+- [ ] Tree-sitter service merged and wired into EditorView
