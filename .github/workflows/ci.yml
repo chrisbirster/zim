@@ -33,9 +33,6 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Resolve release-candidate Hondo package hash
-        run: zig fetch https://github.com/chrisbirster/hondo/archive/99b0c64f880428f6357e63e9b57b8dffa853db06.tar.gz
-
       - name: Check Zig formatting
         run: zig fmt --check src build.zig
 
