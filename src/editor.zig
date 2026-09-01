@@ -1548,15 +1548,15 @@ pub const Editor = struct {
         if (cp > 0x7f) return false;
         const target: u8 = @intCast(cp);
         var remaining = pending.count;
-        var cursor = self.cursor();
+        var scan_cursor = self.cursor();
         while (remaining > 0) : (remaining -= 1) {
             const bytes = self.text();
-            const start_line = lineStartAt(bytes, cursor);
-            const end_line = lineEnd(bytes, cursor);
+            const start_line = lineStartAt(bytes, scan_cursor);
+            const end_line = lineEnd(bytes, scan_cursor);
             var found: ?usize = null;
             if (pending.backwards) {
-                if (cursor <= start_line) return false;
-                var index = cursor;
+                if (scan_cursor <= start_line) return false;
+                var index = scan_cursor;
                 while (index > start_line) {
                     index -= 1;
                     if (bytes[index] == target) {
@@ -1565,7 +1565,7 @@ pub const Editor = struct {
                     }
                 }
             } else {
-                var index = @min(cursor + 1, end_line);
+                var index = @min(scan_cursor + 1, end_line);
                 while (index < end_line) : (index += 1) {
                     if (bytes[index] == target) {
                         found = index;
@@ -1574,12 +1574,12 @@ pub const Editor = struct {
                 }
             }
             const match = found orelse return false;
-            cursor = match;
+            scan_cursor = match;
         }
         if (pending.till) {
-            self.currentWindow().cursor = if (pending.backwards) nextCodepointStart(self.text(), cursor) else previousCodepointStartSafe(self.text(), cursor);
+            self.currentWindow().cursor = if (pending.backwards) nextCodepointStart(self.text(), scan_cursor) else previousCodepointStartSafe(self.text(), scan_cursor);
         } else {
-            self.currentWindow().cursor = cursor;
+            self.currentWindow().cursor = scan_cursor;
         }
         return true;
     }
@@ -1796,7 +1796,11 @@ pub const Editor = struct {
         defer self.allocator.free(keys);
         self.replaying_macro = true;
         defer self.replaying_macro = false;
-        for (0..count) |_| for (keys) |macro_key| _ = try self.handleKey(macro_key);
+        for (0..count) |_| {
+            for (keys) |macro_key| {
+                _ = try self.handleKey(macro_key);
+            }
+        }
     }
 
     fn matchDelimiter(self: *Editor) bool {
@@ -1966,11 +1970,15 @@ pub const Editor = struct {
         const line = self.cursorPosition().line - 1;
         switch (cp) {
             'M' => {
-                for (self.folds.items) |*fold| if (fold.window_id == self.currentWindow().id) fold.closed = true;
+                for (self.folds.items) |*fold| {
+                    if (fold.window_id == self.currentWindow().id) fold.closed = true;
+                }
                 return true;
             },
             'R' => {
-                for (self.folds.items) |*fold| if (fold.window_id == self.currentWindow().id) fold.closed = false;
+                for (self.folds.items) |*fold| {
+                    if (fold.window_id == self.currentWindow().id) fold.closed = false;
+                }
                 return true;
             },
             'a', 'c', 'o' => {
@@ -2264,7 +2272,11 @@ fn sentenceTextObject(bytes: []const u8, at: usize, scope: TextObjectScope, coun
         while (next < bytes.len and isSpaceByte(bytes[next])) next = nextCodepointStart(bytes, next);
         end = sentenceEnd(bytes, next);
     }
-    if (scope == .around) while (end < bytes.len and isSpaceByte(bytes[end])) end = nextCodepointStart(bytes, end);
+    if (scope == .around) {
+        while (end < bytes.len and isSpaceByte(bytes[end])) {
+            end = nextCodepointStart(bytes, end);
+        }
+    }
     return .{ .start = start, .end = end };
 }
 
@@ -2467,7 +2479,7 @@ test "classic paragraph sentence objects and operator counts compose" {
 test "classic find repeat percent and operator post-counts behave like Vim" {
     var editor = try Editor.init(std.testing.allocator, std.testing.io, null);
     defer editor.deinit();
-    try editor.setText("a,b,c,d (x[y]z) words here now");
+    try editor.setText("a,b,c,d,e (x[y]z) words here now");
     _ = try editor.handleKey(.{ .codepoint = '3' });
     _ = try editor.handleKey(.{ .codepoint = 'f' });
     _ = try editor.handleKey(.{ .codepoint = ',' });
@@ -2476,9 +2488,9 @@ test "classic find repeat percent and operator post-counts behave like Vim" {
     try std.testing.expectEqual(@as(usize, 7), editor.cursor());
     _ = try editor.handleKey(.{ .codepoint = ',' });
     try std.testing.expectEqual(@as(usize, 5), editor.cursor());
-    editor.setCursor(8);
+    editor.setCursor(10);
     _ = try editor.handleKey(.{ .codepoint = '%' });
-    try std.testing.expect(editor.cursor() > 8);
+    try std.testing.expect(editor.cursor() > 10);
     editor.setCursor(editor.text().len - "words here now".len);
     _ = try editor.handleKey(.{ .codepoint = 'd' });
     _ = try editor.handleKey(.{ .codepoint = '2' });
