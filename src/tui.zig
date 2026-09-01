@@ -207,6 +207,7 @@ fn isQuitEvent(event: hondo.terminal.input.Event) bool {
 fn sceneContainsText(scene: *hondo.scene.Scene, expected: []const u8) bool {
     for (scene.nodes.items) |maybe_node| {
         const node = maybe_node orelse continue;
+        if (!hondo.native_view.isAttached(scene, node.id)) continue;
         if (node.text) |text| {
             if (std.mem.indexOf(u8, text, expected) != null) return true;
         }
