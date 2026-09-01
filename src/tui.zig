@@ -151,8 +151,9 @@ pub fn run(init: std.process.Init, editor: *editor_module.Editor) !u8 {
         if (!has_input) continue;
 
         const event = (try readTerminalEvent(terminal_io.stdin_fd)) orelse break;
-        if (isQuitEvent(event)) break;
+        if (isImmediateQuitEvent(event)) break;
         _ = try app.dispatch(event);
+        if (editor.quit_requested) break;
         try app.writeFrame();
     }
     return 0;
@@ -194,7 +195,7 @@ fn readTerminalEvent(fd: c_int) !?hondo.terminal.input.Event {
         .{ .key = .{ .codepoint = 0xfffd } };
 }
 
-fn isQuitEvent(event: hondo.terminal.input.Event) bool {
+fn isImmediateQuitEvent(event: hondo.terminal.input.Event) bool {
     return switch (event) {
         .key => |key| switch (key) {
             .ctrl_c => true,
@@ -215,8 +216,8 @@ fn sceneContainsText(scene: *hondo.scene.Scene, expected: []const u8) bool {
     return false;
 }
 
-test "Hondo chrome reacts while Zim editor input stays on the native path" {
-    var editor = editor_module.Editor.init(std.testing.allocator, null);
+test "Hondo chrome reacts while the expanded editor grammar stays native" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
     defer editor.deinit();
     var app = try TuiApp.init(std.testing.allocator, &editor, 80, 24);
     defer app.deinit();
@@ -237,15 +238,26 @@ test "Hondo chrome reacts while Zim editor input stays on the native path" {
     );
 
     _ = try app.dispatch(.{ .key = .escape });
-    try std.testing.expectEqual(editor_module.Mode.normal, editor.mode);
     const command = try app.dispatch(.{ .key = .{ .codepoint = ':' } });
     try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, command.path);
-    try std.testing.expect(sceneContainsText(app.scene, "COMMAND PALETTE"));
+    try std.testing.expectEqual(editor_module.Mode.command_line, editor.mode);
+    try std.testing.expect(sceneContainsText(app.scene, ":"));
 
-    const close = try app.dispatch(.{ .key = .escape });
-    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.javascript, close.path);
-    try std.testing.expect(!sceneContainsText(app.scene, "COMMAND PALETTE"));
-
+    _ = try app.dispatch(.{ .key = .escape });
+    try std.testing.expectEqual(editor_module.Mode.normal, editor.mode);
     const native_again = try app.dispatch(.{ .key = .{ .codepoint = 'i' } });
     try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, native_again.path);
+}
+
+test "Hondo status reflects native split commands" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    var app = try TuiApp.init(std.testing.allocator, &editor, 80, 24);
+    defer app.deinit();
+
+    _ = try app.dispatch(.{ .key = .{ .codepoint = ':' } });
+    for ("vsplit") |byte| _ = try app.dispatch(.{ .key = .{ .codepoint = byte } });
+    _ = try app.dispatch(.{ .key = .enter });
+    try std.testing.expectEqual(@as(usize, 2), editor.activeTab().window_ids.items.len);
+    try std.testing.expect(sceneContainsText(app.scene, "W2"));
 }
