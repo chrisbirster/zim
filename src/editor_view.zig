@@ -16,6 +16,19 @@ const State = struct {
     has_bounds: bool = false,
 };
 
+const CoarseState = struct {
+    mode: editor_module.Mode,
+    command_open: bool,
+    buffer_id: editor_module.BufferId,
+    window_id: editor_module.WindowId,
+    modified: bool,
+    buffer_count: usize,
+    window_count: usize,
+    tab_count: usize,
+    quit_requested: bool,
+    status_hash: u64,
+};
+
 const WindowHit = struct {
     window_id: editor_module.WindowId,
     bounds: hondo.native_view.Bounds,
@@ -101,11 +114,53 @@ fn handleKey(
     key: hondo.terminal.input.Key,
 ) !hondo.native_view.InputResult {
     const translated = translateKey(key) orelse return .ignored;
+    const before = captureCoarseState(state.editor);
     const result = try state.editor.handleKey(translated);
     if (!result.handled) return .ignored;
     context.invalidate();
-    try publishState(state, context);
+    const after = captureCoarseState(state.editor);
+    if (shouldPublishKeyState(before, after)) try publishState(state, context);
     return .handled;
+}
+
+fn captureCoarseState(editor: *const editor_module.Editor) CoarseState {
+    const window = editor.currentWindowConst();
+    return .{
+        .mode = editor.mode,
+        .command_open = editor.commandOpen(),
+        .buffer_id = window.buffer_id,
+        .window_id = window.id,
+        .modified = editor.currentBufferConst().modified,
+        .buffer_count = editor.buffers.items.len,
+        .window_count = editor.activeTabConst().window_ids.items.len,
+        .tab_count = editor.tabs.items.len,
+        .quit_requested = editor.quit_requested,
+        .status_hash = hashBytes(editor.status()),
+    };
+}
+
+fn shouldPublishKeyState(before: CoarseState, after: CoarseState) bool {
+    if (before.mode == .command_line or after.mode == .command_line) return true;
+    if (before.mode == .insert and after.mode == .insert) return false;
+    return before.mode != after.mode or
+        before.command_open != after.command_open or
+        before.buffer_id != after.buffer_id or
+        before.window_id != after.window_id or
+        before.modified != after.modified or
+        before.buffer_count != after.buffer_count or
+        before.window_count != after.window_count or
+        before.tab_count != after.tab_count or
+        before.quit_requested != after.quit_requested or
+        before.status_hash != after.status_hash;
+}
+
+fn hashBytes(bytes: []const u8) u64 {
+    var hash: u64 = 0xcbf29ce484222325;
+    for (bytes) |byte| {
+        hash ^= byte;
+        hash *%= 0x100000001b3;
+    }
+    return hash;
 }
 
 fn translateKey(key: hondo.terminal.input.Key) ?editor_module.Key {
