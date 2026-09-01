@@ -859,13 +859,34 @@ pub const Editor = struct {
                 for (0..count) |_| self.moveParagraph(true);
                 break :blk true;
             },
-            '"' => blk: { self.pending_register_select = true; break :blk true; },
-            'q' => blk: { self.pending_macro_record = true; break :blk true; },
-            '@' => blk: { self.pending_macro_play = true; break :blk true; },
-            'm' => blk: { self.pending_mark_set = true; break :blk true; },
-            '\'' => blk: { self.pending_mark_line = true; break :blk true; },
-            '`' => blk: { self.pending_mark_exact = true; break :blk true; },
-            'z' => blk: { self.pending_z = true; break :blk true; },
+            '"' => blk: {
+                self.pending_register_select = true;
+                break :blk true;
+            },
+            'q' => blk: {
+                self.pending_macro_record = true;
+                break :blk true;
+            },
+            '@' => blk: {
+                self.pending_macro_play = true;
+                break :blk true;
+            },
+            'm' => blk: {
+                self.pending_mark_set = true;
+                break :blk true;
+            },
+            '\'' => blk: {
+                self.pending_mark_line = true;
+                break :blk true;
+            },
+            '`' => blk: {
+                self.pending_mark_exact = true;
+                break :blk true;
+            },
+            'z' => blk: {
+                self.pending_z = true;
+                break :blk true;
+            },
             else => false,
         };
     }
@@ -1538,12 +1559,18 @@ pub const Editor = struct {
                 var index = cursor;
                 while (index > start_line) {
                     index -= 1;
-                    if (bytes[index] == target) { found = index; break; }
+                    if (bytes[index] == target) {
+                        found = index;
+                        break;
+                    }
                 }
             } else {
                 var index = @min(cursor + 1, end_line);
                 while (index < end_line) : (index += 1) {
-                    if (bytes[index] == target) { found = index; break; }
+                    if (bytes[index] == target) {
+                        found = index;
+                        break;
+                    }
                 }
             }
             const match = found orelse return false;
@@ -1938,8 +1965,14 @@ pub const Editor = struct {
     fn handleFoldCommand(self: *Editor, cp: u21) bool {
         const line = self.cursorPosition().line - 1;
         switch (cp) {
-            'M' => { for (self.folds.items) |*fold| if (fold.window_id == self.currentWindow().id) fold.closed = true; return true; },
-            'R' => { for (self.folds.items) |*fold| if (fold.window_id == self.currentWindow().id) fold.closed = false; return true; },
+            'M' => {
+                for (self.folds.items) |*fold| if (fold.window_id == self.currentWindow().id) fold.closed = true;
+                return true;
+            },
+            'R' => {
+                for (self.folds.items) |*fold| if (fold.window_id == self.currentWindow().id) fold.closed = false;
+                return true;
+            },
             'a', 'c', 'o' => {
                 var best: ?*Fold = null;
                 for (self.folds.items) |*fold| {
@@ -2190,7 +2223,9 @@ fn paragraphTextObject(bytes: []const u8, at: usize, scope: TextObjectScope, cou
     return current;
 }
 
-fn isSentenceTerminator(byte: u8) bool { return byte == '.' or byte == '!' or byte == '?'; }
+fn isSentenceTerminator(byte: u8) bool {
+    return byte == '.' or byte == '!' or byte == '?';
+}
 
 fn sentenceStart(bytes: []const u8, at: usize) usize {
     var index = @min(at, bytes.len);
@@ -2269,7 +2304,15 @@ fn matchingDelimiterOffset(bytes: []const u8, at: usize) ?usize {
     while (cursor < line_end and std.mem.indexOfScalar(u8, "()[]{}", bytes[cursor]) == null) cursor += 1;
     if (cursor >= bytes.len or std.mem.indexOfScalar(u8, "()[]{}", bytes[cursor]) == null) return null;
     const ch = bytes[cursor];
-    const pair: u8 = switch (ch) { '(' => ')', '[' => ']', '{' => '}', ')' => '(', ']' => '[', '}' => '{', else => return null };
+    const pair: u8 = switch (ch) {
+        '(' => ')',
+        '[' => ']',
+        '{' => '}',
+        ')' => '(',
+        ']' => '[',
+        '}' => '{',
+        else => return null,
+    };
     const forward = ch == '(' or ch == '[' or ch == '{';
     var depth: usize = 1;
     var index = cursor;
@@ -2405,7 +2448,6 @@ test "single-key maps are configurable without a terminal dependency" {
     try std.testing.expectEqual(@as(usize, 1), editor.cursor());
 }
 
-
 test "classic paragraph sentence objects and operator counts compose" {
     var editor = try Editor.init(std.testing.allocator, std.testing.io, null);
     defer editor.deinit();
@@ -2448,15 +2490,21 @@ test "named numbered yank small-delete and black-hole registers are distinct" {
     var editor = try Editor.init(std.testing.allocator, std.testing.io, null);
     defer editor.deinit();
     try editor.setText("alpha beta\nsecond\n");
-    _ = try editor.handleKey(.{ .codepoint = '"' }); _ = try editor.handleKey(.{ .codepoint = 'a' });
-    _ = try editor.handleKey(.{ .codepoint = 'y' }); _ = try editor.handleKey(.{ .codepoint = 'i' }); _ = try editor.handleKey(.{ .codepoint = 'w' });
+    _ = try editor.handleKey(.{ .codepoint = '"' });
+    _ = try editor.handleKey(.{ .codepoint = 'a' });
+    _ = try editor.handleKey(.{ .codepoint = 'y' });
+    _ = try editor.handleKey(.{ .codepoint = 'i' });
+    _ = try editor.handleKey(.{ .codepoint = 'w' });
     try std.testing.expectEqualStrings("alpha", editor.named_registers[0].bytes.items);
     try std.testing.expectEqualStrings("alpha", editor.numbered_registers[0].bytes.items);
     _ = try editor.handleKey(.{ .codepoint = 'x' });
     try std.testing.expect(editor.small_delete_register.bytes.items.len > 0);
-    const unnamed_before = try std.testing.allocator.dupe(u8, editor.unnamed_register.bytes.items); defer std.testing.allocator.free(unnamed_before);
-    _ = try editor.handleKey(.{ .codepoint = '"' }); _ = try editor.handleKey(.{ .codepoint = '_' });
-    _ = try editor.handleKey(.{ .codepoint = 'd' }); _ = try editor.handleKey(.{ .codepoint = 'd' });
+    const unnamed_before = try std.testing.allocator.dupe(u8, editor.unnamed_register.bytes.items);
+    defer std.testing.allocator.free(unnamed_before);
+    _ = try editor.handleKey(.{ .codepoint = '"' });
+    _ = try editor.handleKey(.{ .codepoint = '_' });
+    _ = try editor.handleKey(.{ .codepoint = 'd' });
+    _ = try editor.handleKey(.{ .codepoint = 'd' });
     try std.testing.expectEqualStrings(unnamed_before, editor.unnamed_register.bytes.items);
 }
 
@@ -2464,15 +2512,20 @@ test "macros marks jumplist and changelist provide familiar navigation" {
     var editor = try Editor.init(std.testing.allocator, std.testing.io, null);
     defer editor.deinit();
     try editor.setText("abc\ndef\nghi\n");
-    _ = try editor.handleKey(.{ .codepoint = 'q' }); _ = try editor.handleKey(.{ .codepoint = 'a' });
-    _ = try editor.handleKey(.{ .codepoint = 'l' }); _ = try editor.handleKey(.{ .codepoint = 'l' });
+    _ = try editor.handleKey(.{ .codepoint = 'q' });
+    _ = try editor.handleKey(.{ .codepoint = 'a' });
+    _ = try editor.handleKey(.{ .codepoint = 'l' });
+    _ = try editor.handleKey(.{ .codepoint = 'l' });
     _ = try editor.handleKey(.{ .codepoint = 'q' });
     editor.setCursor(0);
-    _ = try editor.handleKey(.{ .codepoint = '@' }); _ = try editor.handleKey(.{ .codepoint = 'a' });
+    _ = try editor.handleKey(.{ .codepoint = '@' });
+    _ = try editor.handleKey(.{ .codepoint = 'a' });
     try std.testing.expectEqual(@as(usize, 2), editor.cursor());
-    _ = try editor.handleKey(.{ .codepoint = 'm' }); _ = try editor.handleKey(.{ .codepoint = 'a' });
+    _ = try editor.handleKey(.{ .codepoint = 'm' });
+    _ = try editor.handleKey(.{ .codepoint = 'a' });
     editor.setCursor(editor.text().len);
-    _ = try editor.handleKey(.{ .codepoint = '`' }); _ = try editor.handleKey(.{ .codepoint = 'a' });
+    _ = try editor.handleKey(.{ .codepoint = '`' });
+    _ = try editor.handleKey(.{ .codepoint = 'a' });
     try std.testing.expectEqual(@as(usize, 2), editor.cursor());
     _ = try editor.handleKey(.ctrl_o);
     try std.testing.expect(editor.cursor() > 2);
@@ -2491,8 +2544,12 @@ test "visual block delete and insert are rectangular and UTF-8 safe" {
     _ = try editor.handleKey(.{ .codepoint = 'd' });
     try std.testing.expectEqualStrings("ac\ndf\ngi\n", editor.text());
     editor.setCursorFromLineColumn(0, 1);
-    _ = try editor.handleKey(.ctrl_v); _ = try editor.handleKey(.{ .codepoint = 'j' }); _ = try editor.handleKey(.{ .codepoint = 'j' });
-    _ = try editor.handleKey(.{ .codepoint = 'I' }); _ = try editor.handleKey(.{ .codepoint = 'X' }); _ = try editor.handleKey(.escape);
+    _ = try editor.handleKey(.ctrl_v);
+    _ = try editor.handleKey(.{ .codepoint = 'j' });
+    _ = try editor.handleKey(.{ .codepoint = 'j' });
+    _ = try editor.handleKey(.{ .codepoint = 'I' });
+    _ = try editor.handleKey(.{ .codepoint = 'X' });
+    _ = try editor.handleKey(.escape);
     try std.testing.expectEqualStrings("aXc\ndXf\ngXi\n", editor.text());
 }
 
@@ -2501,13 +2558,17 @@ test "fold commands own visibility independently of providers" {
     defer editor.deinit();
     try editor.setText("one\ntwo\nthree\nfour\n");
     try editor.addManualFold(0, 2);
-    _ = try editor.handleKey(.{ .codepoint = 'z' }); _ = try editor.handleKey(.{ .codepoint = 'c' });
+    _ = try editor.handleKey(.{ .codepoint = 'z' });
+    _ = try editor.handleKey(.{ .codepoint = 'c' });
     try std.testing.expect(editor.lineHiddenByFold(editor.currentWindow().id, 1));
-    _ = try editor.handleKey(.{ .codepoint = 'z' }); _ = try editor.handleKey(.{ .codepoint = 'o' });
+    _ = try editor.handleKey(.{ .codepoint = 'z' });
+    _ = try editor.handleKey(.{ .codepoint = 'o' });
     try std.testing.expect(!editor.lineHiddenByFold(editor.currentWindow().id, 1));
     try editor.replaceProviderFolds(&.{.{ .start_line = 1, .end_line = 3 }});
-    _ = try editor.handleKey(.{ .codepoint = 'z' }); _ = try editor.handleKey(.{ .codepoint = 'M' });
+    _ = try editor.handleKey(.{ .codepoint = 'z' });
+    _ = try editor.handleKey(.{ .codepoint = 'M' });
     try std.testing.expect(editor.lineHiddenByFold(editor.currentWindow().id, 2));
-    _ = try editor.handleKey(.{ .codepoint = 'z' }); _ = try editor.handleKey(.{ .codepoint = 'R' });
+    _ = try editor.handleKey(.{ .codepoint = 'z' });
+    _ = try editor.handleKey(.{ .codepoint = 'R' });
     try std.testing.expect(!editor.lineHiddenByFold(editor.currentWindow().id, 2));
 }
