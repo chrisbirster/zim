@@ -1,0 +1,251 @@
+const std = @import("std");
+const hondo = @import("hondo");
+const editor_module = @import("editor.zig");
+const editor_view = @import("editor_view.zig");
+const terminal_io = @import("terminal_io.zig");
+
+const ui_bundle = @embedFile("generated/zim_ui.js");
+const fallback_width = 80;
+const fallback_height = 24;
+const resize_poll_ms = 50;
+const sequence_wait_ms = 10;
+
+const TuiApp = struct {
+    allocator: std.mem.Allocator,
+    editor: *editor_module.Editor,
+    scene: *hondo.scene.Scene,
+    runtime: hondo.runtime.Runtime,
+    renderer: hondo.terminal.renderer.Renderer,
+    focus: hondo.focus.Manager,
+    registry: hondo.native_view.Registry,
+
+    fn init(
+        allocator: std.mem.Allocator,
+        editor: *editor_module.Editor,
+        width: usize,
+        height: usize,
+    ) !TuiApp {
+        const scene = try allocator.create(hondo.scene.Scene);
+        errdefer allocator.destroy(scene);
+        scene.* = try hondo.scene.Scene.init(allocator);
+        errdefer scene.deinit();
+
+        var runtime = try hondo.runtime.Runtime.init();
+        errdefer runtime.deinit();
+        try runtime.installSceneBridge(scene);
+
+        var registry = hondo.native_view.Registry.init(allocator);
+        errdefer registry.deinit();
+        try registry.register(editor_view.native_type, editor_view.bind(editor));
+        errdefer editor_view.unbind(editor);
+
+        try runtime.eval(ui_bundle, "zim-hondo-ui.js");
+        errdefer runtime.eval("globalThis.__zimUiDispose?.();", "zim-hondo-ui-dispose.js") catch {};
+        try registry.sync(scene);
+
+        var renderer = try hondo.terminal.renderer.Renderer.init(allocator, width, height);
+        errdefer renderer.deinit();
+
+        var app = TuiApp{
+            .allocator = allocator,
+            .editor = editor,
+            .scene = scene,
+            .runtime = runtime,
+            .renderer = renderer,
+            .focus = .{},
+            .registry = registry,
+        };
+        try app.syncFocus();
+        return app;
+    }
+
+    fn deinit(self: *TuiApp) void {
+        if (self.focus.clear()) |change| {
+            hondo.input_events.dispatchFocusChange(&self.runtime, change) catch {};
+        }
+        self.runtime.eval("globalThis.__zimUiDispose?.();", "zim-hondo-ui-dispose.js") catch {};
+        self.registry.deinit();
+        editor_view.unbind(self.editor);
+        self.renderer.deinit();
+        self.runtime.deinit();
+        self.scene.deinit();
+        self.allocator.destroy(self.scene);
+        self.* = undefined;
+    }
+
+    fn syncFocus(self: *TuiApp) !void {
+        if (try self.focus.syncRequested(self.scene)) |change| {
+            try hondo.input_events.dispatchFocusChange(&self.runtime, change);
+        }
+    }
+
+    fn dispatch(self: *TuiApp, event: hondo.terminal.input.Event) !hondo.native_view_runtime.DispatchResult {
+        const grid = self.renderer.grid();
+        return hondo.native_view_runtime.dispatchInteractive(
+            self.allocator,
+            &self.runtime,
+            self.scene,
+            &self.focus,
+            &self.registry,
+            event,
+            grid.width,
+            grid.height,
+        );
+    }
+
+    fn render(self: *TuiApp) !void {
+        try hondo.native_view_renderer.render(self.scene, &self.registry, self.renderer.grid());
+    }
+
+    fn resize(self: *TuiApp, width: usize, height: usize) !bool {
+        return self.renderer.resize(width, height);
+    }
+
+    fn writeFrame(self: *TuiApp) !void {
+        try self.render();
+        const bytes = try self.renderer.encode();
+        defer self.allocator.free(bytes);
+        if (bytes.len != 0) try terminal_io.writeAll(terminal_io.stdout_fd, bytes);
+    }
+};
+
+pub fn run(init: std.process.Init, editor: *editor_module.Editor) !u8 {
+    var session = try hondo.terminal.session.Session.begin(
+        terminal_io.stdin_fd,
+        terminal_io.stdout_fd,
+    );
+    defer session.restore() catch {};
+
+    const restore = try hondo.terminal.control.restoreSequence(init.gpa);
+    defer init.gpa.free(restore);
+    defer terminal_io.writeAll(terminal_io.stdout_fd, restore) catch {};
+
+    const input_restore = try hondo.terminal.control.inputFeaturesRestoreSequence(init.gpa);
+    defer init.gpa.free(input_restore);
+    defer terminal_io.writeAll(terminal_io.stdout_fd, input_restore) catch {};
+
+    const begin = try hondo.terminal.control.beginSequence(init.gpa);
+    defer init.gpa.free(begin);
+    try terminal_io.writeAll(terminal_io.stdout_fd, begin);
+
+    const input_begin = try hondo.terminal.control.inputFeaturesBeginSequence(init.gpa);
+    defer init.gpa.free(input_begin);
+    try terminal_io.writeAll(terminal_io.stdout_fd, input_begin);
+
+    const initial_size = hondo.terminal.size.query(terminal_io.stdout_fd) catch hondo.terminal.size.Size{
+        .width = fallback_width,
+        .height = fallback_height,
+    };
+    var size_tracker = hondo.terminal.size.Tracker.initKnown(initial_size);
+
+    var app = try TuiApp.init(init.gpa, editor, initial_size.width, initial_size.height);
+    defer app.deinit();
+    try app.writeFrame();
+
+    while (true) {
+        const has_input = try hondo.terminal.wait.readable(terminal_io.stdin_fd, resize_poll_ms);
+        const resize = size_tracker.poll(terminal_io.stdout_fd) catch null;
+        if (resize) |new_size| {
+            if (try app.resize(new_size.width, new_size.height)) try app.writeFrame();
+        }
+        if (!has_input) continue;
+
+        const event = (try readTerminalEvent(terminal_io.stdin_fd)) orelse break;
+        if (isQuitEvent(event)) break;
+        _ = try app.dispatch(event);
+        try app.writeFrame();
+    }
+    return 0;
+}
+
+fn readTerminalEvent(fd: c_int) !?hondo.terminal.input.Event {
+    const first = (try terminal_io.readByte(fd)) orelse return null;
+    var bytes: [64]u8 = undefined;
+    bytes[0] = first;
+    var len: usize = 1;
+
+    if (first == 0x1b) {
+        if (!try hondo.terminal.wait.readable(fd, sequence_wait_ms)) {
+            return .{ .key = .escape };
+        }
+        bytes[len] = (try terminal_io.readByte(fd)) orelse return .{ .key = .escape };
+        len += 1;
+        if (bytes[1] != '[') return .{ .key = .escape };
+        while (len < bytes.len) {
+            if (len >= 3) {
+                if (hondo.terminal.input.decode(bytes[0..len])) |decoded| {
+                    if (decoded.consumed == len) return decoded.event;
+                }
+            }
+            if (!try hondo.terminal.wait.readable(fd, sequence_wait_ms)) return .{ .key = .escape };
+            bytes[len] = (try terminal_io.readByte(fd)) orelse return .{ .key = .escape };
+            len += 1;
+        }
+        return .{ .key = .escape };
+    }
+
+    const sequence_len = std.unicode.utf8ByteSequenceLength(first) catch 1;
+    while (len < sequence_len and len < bytes.len) : (len += 1) {
+        bytes[len] = (try terminal_io.readByte(fd)) orelse break;
+    }
+    return if (hondo.terminal.input.decode(bytes[0..len])) |decoded|
+        decoded.event
+    else
+        .{ .key = .{ .codepoint = 0xfffd } };
+}
+
+fn isQuitEvent(event: hondo.terminal.input.Event) bool {
+    return switch (event) {
+        .key => |key| switch (key) {
+            .ctrl_c => true,
+            else => false,
+        },
+        else => false,
+    };
+}
+
+fn sceneContainsText(scene: *hondo.scene.Scene, expected: []const u8) bool {
+    for (scene.nodes.items) |maybe_node| {
+        const node = maybe_node orelse continue;
+        if (!hondo.native_view.isAttached(scene, node.id)) continue;
+        if (node.text) |text| {
+            if (std.mem.indexOf(u8, text, expected) != null) return true;
+        }
+    }
+    return false;
+}
+
+test "Hondo chrome reacts while Zim editor input stays on the native path" {
+    var editor = editor_module.Editor.init(std.testing.allocator, null);
+    defer editor.deinit();
+    var app = try TuiApp.init(std.testing.allocator, &editor, 80, 24);
+    defer app.deinit();
+
+    try std.testing.expect(sceneContainsText(app.scene, "NORMAL"));
+
+    const insert_mode = try app.dispatch(.{ .key = .{ .codepoint = 'i' } });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, insert_mode.path);
+    try std.testing.expectEqual(editor_module.Mode.insert, editor.mode);
+    try std.testing.expect(sceneContainsText(app.scene, "INSERT"));
+
+    const edit = try app.dispatch(.{ .key = .{ .codepoint = 'x' } });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, edit.path);
+    try std.testing.expectEqualStrings("x", editor.text());
+    try app.runtime.eval(
+        "if (globalThis.__zimJsKeyEvents !== 0) throw new Error('editor key crossed into JavaScript');",
+        "zim-native-key-proof.js",
+    );
+
+    _ = try app.dispatch(.{ .key = .escape });
+    try std.testing.expectEqual(editor_module.Mode.normal, editor.mode);
+    const command = try app.dispatch(.{ .key = .{ .codepoint = ':' } });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, command.path);
+    try std.testing.expect(sceneContainsText(app.scene, "COMMAND PALETTE"));
+
+    const close = try app.dispatch(.{ .key = .escape });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.javascript, close.path);
+    try std.testing.expect(!sceneContainsText(app.scene, "COMMAND PALETTE"));
+
+    const native_again = try app.dispatch(.{ .key = .{ .codepoint = 'i' } });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, native_again.path);
+}

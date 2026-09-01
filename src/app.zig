@@ -1,6 +1,8 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 const editor = @import("editor.zig");
+const headless = @import("headless.zig");
+const tui = @import("tui.zig");
 
 pub const version = "0.1.0";
 
@@ -13,7 +15,7 @@ const help_text =
     \\Options:
     \\  -h, --help       Show this help
     \\  -v, --version    Show the Zim version
-    \\      --headless   Start the editor core without the TUI
+    \\      --headless   Start the editor core without the Hondo TUI
     \\
 ;
 
@@ -37,15 +39,11 @@ pub fn run(init: std.process.Init) !u8 {
             return 0;
         },
         .run => |options| {
-            const state = editor.Editor.init(options.target);
-            _ = state;
+            if (options.headless) return headless.run(init.gpa, options.target);
 
-            if (options.headless) {
-                return 0;
-            }
-
-            try printBanner(init.io, options.target);
-            return 0;
+            var state = editor.Editor.init(init.gpa, options.target);
+            defer state.deinit();
+            return tui.run(init, &state);
         },
     }
 }
@@ -60,26 +58,5 @@ fn printParseError(io: std.Io, err: cli.ParseError) !void {
     }
 
     try writer.interface.writeAll("Run 'zim --help' for usage.\n");
-    try writer.interface.flush();
-}
-
-fn printBanner(io: std.Io, target: ?[]const u8) !void {
-    var buffer: [4096]u8 = undefined;
-    var writer = std.Io.File.stdout().writer(io, &buffer);
-
-    try writer.interface.print(
-        \\
-        \\ZIM - {s} - YOUR NEW CODE OVERLORD
-        \\
-        \\THE CODE... IT FILLS ME... IT IS NEAT!
-        \\
-        \\[INVADING]    {s}
-        \\[CATALOGING]  Human files
-        \\[AWAKENING]   Language intelligence
-        \\[STARTING]    Operation Impending Build
-        \\[READY]       Commence coding
-        \\
-    , .{ version, target orelse "[No Name]" });
-
     try writer.interface.flush();
 }

@@ -1,0 +1,16 @@
+{
+  "name": "zim-hondo-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:ui": "node scripts/build-ui.mjs"
+  },
+  "dependencies": {
+    "@solidjs/universal": "2.0.0-rc.4",
+    "hondo": "https://github.com/chrisbirster/hondo/archive/99b0c64f880428f6357e63e9b57b8dffa853db06.tar.gz",
+    "solid-js": "2.0.0-rc.4"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
