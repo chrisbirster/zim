@@ -330,7 +330,10 @@ fn hitLayout(
                 const first_width = (bounds.width - 1) / 2;
                 const divider_x = bounds.x + first_width;
                 if (x < divider_x) break :blk hitLayout(tab, split.first, .{
-                    .x = bounds.x, .y = bounds.y, .width = first_width, .height = bounds.height,
+                    .x = bounds.x,
+                    .y = bounds.y,
+                    .width = first_width,
+                    .height = bounds.height,
                 }, x, y);
                 if (x == divider_x) break :blk null;
                 break :blk hitLayout(tab, split.second, .{
@@ -345,7 +348,10 @@ fn hitLayout(
                 const first_height = (bounds.height - 1) / 2;
                 const divider_y = bounds.y + first_height;
                 if (y < divider_y) break :blk hitLayout(tab, split.first, .{
-                    .x = bounds.x, .y = bounds.y, .width = bounds.width, .height = first_height,
+                    .x = bounds.x,
+                    .y = bounds.y,
+                    .width = bounds.width,
+                    .height = first_height,
                 }, x, y);
                 if (y == divider_y) break :blk null;
                 break :blk hitLayout(tab, split.second, .{
@@ -487,7 +493,10 @@ test "split layout paints two native editor windows with a divider" {
     var grid = try hondo.cell_grid.CellGrid.init(std.testing.allocator, 40, 8);
     defer grid.deinit();
     try paintLayout(&editor, &grid, editor.activeTabConst(), editor.activeTabConst().root, .{
-        .x = 0, .y = 0, .width = 40, .height = 8,
+        .x = 0,
+        .y = 0,
+        .width = 40,
+        .height = 8,
     });
     const divider = grid.get(19, 0).?;
     try std.testing.expectEqualStrings("│", divider.grapheme);
