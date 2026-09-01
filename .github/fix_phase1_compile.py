@@ -14,6 +14,8 @@ replacements = [
     ("                for (self.folds.items) |*fold| if (fold.window_id == self.currentWindow().id) fold.closed = true;\n", "                for (self.folds.items) |*fold| {\n                    if (fold.window_id == self.currentWindow().id) fold.closed = true;\n                }\n"),
     ("                for (self.folds.items) |*fold| if (fold.window_id == self.currentWindow().id) fold.closed = false;\n", "                for (self.folds.items) |*fold| {\n                    if (fold.window_id == self.currentWindow().id) fold.closed = false;\n                }\n"),
     ('    if (scope == .around) while (end < bytes.len and isSpaceByte(bytes[end])) end = nextCodepointStart(bytes, end);\n', '    if (scope == .around) {\n        while (end < bytes.len and isSpaceByte(bytes[end])) {\n            end = nextCodepointStart(bytes, end);\n        }\n    }\n'),
+    ('    try editor.setText("a,b,c,d (x[y]z) words here now");\n', '    try editor.setText("a,b,c,d,e (x[y]z) words here now");\n'),
+    ('    editor.setCursor(8);\n    _ = try editor.handleKey(.{ .codepoint = \'%\' });\n    try std.testing.expect(editor.cursor() > 8);\n', '    editor.setCursor(10);\n    _ = try editor.handleKey(.{ .codepoint = \'%\' });\n    try std.testing.expect(editor.cursor() > 10);\n'),
 ]
 
 for old, new in replacements:
