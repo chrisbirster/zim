@@ -39,10 +39,11 @@ pub fn run(init: std.process.Init) !u8 {
             return 0;
         },
         .run => |options| {
-            if (options.headless) return headless.run(init.gpa, options.target);
+            if (options.headless) return try headless.run(init.gpa, init.io, options.target);
 
-            var state = editor.Editor.init(init.gpa, options.target);
+            var state = try editor.Editor.init(init.gpa, init.io, options.target);
             defer state.deinit();
+            try state.loadInitial();
             return tui.run(init, &state);
         },
     }
