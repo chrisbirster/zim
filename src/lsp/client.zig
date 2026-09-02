@@ -59,6 +59,14 @@ pub const Client = struct {
                     .documentSymbol = .{ .dynamicRegistration = false },
                     .rename = .{ .dynamicRegistration = false },
                     .codeAction = .{ .dynamicRegistration = false },
+                    .formatting = .{ .dynamicRegistration = false },
+                    .completion = .{
+                        .dynamicRegistration = false,
+                        .completionItem = .{
+                            .snippetSupport = false,
+                            .documentationFormat = &.{ "markdown", "plaintext" },
+                        },
+                    },
                 },
             },
         });
@@ -139,6 +147,8 @@ test "client negotiates initialize and shutdown lifecycle without a process" {
     const initialize_id = try client.beginInitialize("file:///tmp/project");
     try std.testing.expectEqual(State.initializing, client.state);
     try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "\"method\":\"initialize\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "\"formatting\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "\"completion\"") != null);
 
     const initialize_response = try std.fmt.allocPrint(std.testing.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"capabilities\":{{}}}}}}", .{initialize_id});
     defer std.testing.allocator.free(initialize_response);
