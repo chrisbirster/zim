@@ -4,6 +4,7 @@ const api_module = @import("api.zig");
 const api_observer = @import("api/observer.zig");
 const editor_module = @import("editor.zig");
 const editor_view = @import("editor_view.zig");
+const lua_runtime = @import("lua_runtime.zig");
 const terminal_io = @import("terminal_io.zig");
 
 const ui_bundle = @embedFile("generated/zim_ui.js");
@@ -337,4 +338,35 @@ test "buffer-local public keymaps stay on the native Hondo input path" {
     const result = try app.dispatch(.{ .key = .{ .codepoint = 'z' } });
     try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, result.path);
     try std.testing.expectEqual(editor_module.Mode.insert, editor.mode);
+}
+
+test "Lua configuration drives native Hondo keymaps commands and autocmds" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+    var lua = try lua_runtime.Runtime.init(std.testing.allocator, &api, &editor);
+    defer lua.deinit();
+
+    try lua.eval(
+        \\mode_events = 0
+        \\zim.autocmd.create('ModeChanged', function(ev) mode_events = mode_events + 1 end)
+        \\zim.keymap.set('normal', 'z', 'i', { buffer = zim.buf.current() })
+        \\zim.command.create('LuaHello', function(args) zim.buf.set_text(args) end)
+    );
+
+    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 80, 24);
+    defer app.deinit();
+
+    const mapped = try app.dispatch(.{ .key = .{ .codepoint = 'z' } });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, mapped.path);
+    try std.testing.expectEqual(editor_module.Mode.insert, editor.mode);
+    try lua.eval("assert(mode_events == 1)");
+
+    _ = try app.dispatch(.{ .key = .escape });
+    _ = try app.dispatch(.{ .key = .{ .codepoint = ':' } });
+    for ("LuaHello configured") |byte| _ = try app.dispatch(.{ .key = .{ .codepoint = byte } });
+    _ = try app.dispatch(.{ .key = .enter });
+    try std.testing.expectEqualStrings("configured", editor.text());
+    try std.testing.expectEqual(editor_module.Mode.normal, editor.mode);
 }
