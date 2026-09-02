@@ -2,7 +2,7 @@
 
 Zim `v0.2.0` establishes the Zig-side editor API that later Lua and MessagePack-RPC layers will bind to.
 
-The important rule is simple: extensions do not get arbitrary internal pointers. They operate through stable handles and public registries owned by `src/api/root.zig`.
+The important rule is simple: extensions do not get arbitrary internal pointers. They enter through the stable `src/api.zig` facade, which owns typed handles and public registries while keeping the internal `src/api/` layout private.
 
 ## Stable handles
 
