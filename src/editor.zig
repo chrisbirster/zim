@@ -488,6 +488,24 @@ pub const Editor = struct {
         return self.lsp_state.requestCodeAction(self.currentBufferConst(), .{ .start = position, .end = position });
     }
 
+    pub fn lspRequestFormatting(self: *Editor) !u64 {
+        try self.ensureLspReady();
+        return self.lsp_state.requestFormatting(self.currentBufferConst(), 4, true);
+    }
+
+    pub fn lspRequestCompletion(self: *Editor) !u64 {
+        try self.ensureLspReady();
+        return self.lsp_state.requestCompletion(self.currentBufferConst(), self.cursor());
+    }
+
+    pub fn lspCompletionCount(self: *const Editor) usize {
+        return self.lsp_state.completionCount();
+    }
+
+    pub fn lspCompletionLabel(self: *const Editor, index: usize) ?[]const u8 {
+        return self.lsp_state.completionLabel(index);
+    }
+
     pub fn lspNextDiagnostic(self: *Editor, forward: bool) !bool {
         const destination = try self.lsp_state.nextDiagnosticOffset(self.currentBufferConst(), self.cursor(), forward) orelse {
             self.setStatus("no diagnostics", .{});
@@ -1383,6 +1401,10 @@ pub const Editor = struct {
             if (args.len == 0) self.setStatus("rename requires a new name", .{}) else _ = self.lspRequestRename(args) catch |err| self.setStatus("rename unavailable: {s}", .{@errorName(err)});
         } else if (std.mem.eql(u8, name, "codeaction")) {
             _ = self.lspRequestCodeAction() catch |err| self.setStatus("code action unavailable: {s}", .{@errorName(err)});
+        } else if (std.mem.eql(u8, name, "format")) {
+            _ = self.lspRequestFormatting() catch |err| self.setStatus("format unavailable: {s}", .{@errorName(err)});
+        } else if (std.mem.eql(u8, name, "complete")) {
+            _ = self.lspRequestCompletion() catch |err| self.setStatus("completion unavailable: {s}", .{@errorName(err)});
         } else if (std.mem.eql(u8, name, "lspapply")) {
             _ = try self.lspApplyPendingWorkspaceEdit();
         } else if (std.mem.eql(u8, name, "wincmd")) {
@@ -2943,4 +2965,19 @@ test "native LSP augments editor with diagnostics navigation semantic requests a
     try editor.lspHandleIncoming(action_response);
     try std.testing.expectEqual(@as(usize, 1), try editor.lspApplyPendingWorkspaceEdit());
     try std.testing.expect(std.mem.indexOf(u8, editor.text(), "value") != null);
+
+    editor.setCursor(6);
+    const completion_id = try editor.lspRequestCompletion();
+    const completion_response = try std.fmt.allocPrint(std.testing.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"isIncomplete\":false,\"items\":[{{\"label\":\"value\",\"detail\":\"const\",\"insertText\":\"value\"}}]}}}}", .{completion_id});
+    defer std.testing.allocator.free(completion_response);
+    try editor.lspHandleIncoming(completion_response);
+    try std.testing.expectEqual(@as(usize, 1), editor.lspCompletionCount());
+    try std.testing.expectEqualStrings("value", editor.lspCompletionLabel(0).?);
+
+    const formatting_id = try editor.lspRequestFormatting();
+    const formatting_response = try std.fmt.allocPrint(std.testing.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[{{\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":0,\"character\":0}}}},\"newText\":\"// formatted\\n\"}}]}}", .{formatting_id});
+    defer std.testing.allocator.free(formatting_response);
+    try editor.lspHandleIncoming(formatting_response);
+    try std.testing.expectEqual(@as(usize, 1), try editor.lspApplyPendingWorkspaceEdit());
+    try std.testing.expect(std.mem.startsWith(u8, editor.text(), "// formatted\n"));
 }

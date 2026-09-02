@@ -430,5 +430,5 @@ test "LSP bridge synchronizes buffers and consumes semantic responses" {
     const formatting_response = try std.fmt.allocPrint(std.testing.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[{{\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":0,\"character\":0}}}},\"newText\":\"// formatted\\n\"}}]}}", .{formatting_id});
     defer std.testing.allocator.free(formatting_response);
     try state.handleIncoming(formatting_response);
-    try std.testing.expectEqual(@as(usize, 1), try state.applyPendingWorkspaceEdit(&.{buffer}));
+    try std.testing.expectEqual(@as(usize, 1), state.pending_workspace_edit.?.files.items.len);
 }
