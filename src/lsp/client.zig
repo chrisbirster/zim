@@ -3,6 +3,8 @@ const framing = @import("framing.zig");
 const protocol = @import("protocol.zig");
 const process = @import("process.zig");
 
+const EmptyObject = struct {};
+
 pub const State = enum {
     stopped,
     initializing,
@@ -83,12 +85,12 @@ pub const Client = struct {
             if (parsed.value.object.get("error") != null) return error.InitializeFailed;
             self.initialize_id = null;
             self.state = .ready;
-            try self.sendNotification("initialized", .{});
+            try self.sendNotification("initialized", EmptyObject{});
             return;
         }
         if (self.shutdown_id != null and id == self.shutdown_id.?) {
             self.shutdown_id = null;
-            try self.sendNotification("exit", .{});
+            try self.sendNotification("exit", EmptyObject{});
             if (self.transport) |*transport| transport.closeInput();
             self.state = .exited;
         }
@@ -96,7 +98,7 @@ pub const Client = struct {
 
     pub fn requestShutdown(self: *Client) !void {
         if (self.state != .ready) return error.InvalidState;
-        self.shutdown_id = try self.sendRequest("shutdown", .{});
+        self.shutdown_id = try self.sendRequest("shutdown", @as(?u8, null));
         self.state = .shutdown_requested;
     }
 
@@ -156,9 +158,11 @@ test "client negotiates initialize and shutdown lifecycle without a process" {
     try client.handleBody(initialize_response);
     try std.testing.expectEqual(State.ready, client.state);
     try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "\"method\":\"initialized\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "\"params\":{}") != null);
 
     client.clearOutbox();
     try client.requestShutdown();
+    try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "\"params\":null") != null);
     const shutdown_id = client.shutdown_id.?;
     const shutdown_response = try std.fmt.allocPrint(std.testing.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":null}}", .{shutdown_id});
     defer std.testing.allocator.free(shutdown_response);
