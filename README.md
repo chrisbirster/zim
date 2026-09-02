@@ -48,18 +48,21 @@ Lua is the planned primary configuration and in-process plugin language. Externa
 
 Zim is a real modal editor under active pre-1.0 development.
 
-The `v0.1.x` development baseline already includes:
+`v0.2.0 — Programmable Core` adds the stable Zig-side extension contract on top of the existing editor/language foundation:
 
 - native Hondo terminal UI
-- Normal/Insert/Visual/Operator-Pending/command-line modes
-- composable operators, motions, counts, text objects, registers, macros, marks, jump/change history, folds, and undo/redo
+- composable modal grammar, registers, macros, marks, jump/change history, folds, and undo/redo
 - buffers, windows, splits, and tab pages
 - Tree-sitter-backed language services
 - native LSP lifecycle, diagnostics, navigation, hover, signature help, symbols, rename/workspace edits, code actions, formatting, and completion protocol foundation
+- stable typed buffer/window/tab handles
+- public editor state and typed options APIs
+- command and keymap registries, including buffer-local keymaps through the public input entrypoint
+- typed events/autocommands with deterministic snapshot dispatch semantics
 - real pinned ZLS 0.16.0 subprocess smoke testing
 - Ubuntu, macOS, and Windows CI
 
-The current target is **`v0.2.0 — Programmable Core`**: stable typed handles, public editor/options/commands/keymaps APIs, and deterministic typed events/autocommands. Lua configuration follows in `v0.3.0`.
+The next milestone is **`v0.3.0 — Lua Configuration`**: embed Lua, load `~/.config/zim/init.lua`, and bind `zim.opt`, `zim.keymap`, `zim.command`, `zim.autocmd`, buffer/window/tab, and LSP surfaces to the `v0.2.0` API.
 
 ```text
 ZIM 0.2.0 — YOUR NEW CODE OVERLORD
@@ -67,7 +70,7 @@ ZIM 0.2.0 — YOUR NEW CODE OVERLORD
 
 ## Extension architecture
 
-Zim has one conceptual public editor API. The `v0.2.0` Zig-side contract lives under `src/api/` and is documented in [Programmable Core](docs/PROGRAMMABLE_CORE.md).
+Zim has one conceptual public editor API. The stable Zig entrypoint is `src/api.zig`, with the contract documented in [Programmable Core](docs/PROGRAMMABLE_CORE.md).
 
 The long-term layering is:
 
@@ -81,7 +84,7 @@ The long-term layering is:
                     plugins     remote tools
 ```
 
-Lua and RPC should bind to public editor concepts rather than arbitrary internal pointers.
+Lua and RPC bind to public editor concepts rather than arbitrary internal pointers.
 
 ## Neovim fundamentals we are keeping
 
