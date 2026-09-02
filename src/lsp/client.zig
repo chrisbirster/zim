@@ -27,7 +27,7 @@ pub const Client = struct {
     }
 
     pub fn deinit(self: *Client) void {
-        if (self.transport) |*transport| transport.kill() catch {};
+        if (self.transport) |*transport| transport.kill();
         self.decoder.deinit(self.allocator);
         self.outbox.deinit(self.allocator);
         self.* = undefined;
@@ -37,7 +37,7 @@ pub const Client = struct {
         if (self.transport != null) return error.AlreadyRunning;
         self.transport = try process.Transport.spawn(self.io, argv);
         errdefer {
-            self.transport.?.kill() catch {};
+            self.transport.?.kill();
             self.transport = null;
         }
         try self.beginInitialize(root_uri);
