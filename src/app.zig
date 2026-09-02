@@ -49,7 +49,7 @@ pub fn run(init: std.process.Init) !u8 {
             var lua = try lua_runtime.Runtime.init(init.gpa, &api, &state);
             defer lua.deinit();
 
-            if (try configPathAlloc(init.gpa, &init.environ_map)) |config_path| {
+            if (try configPathAlloc(init.gpa, init.environ_map)) |config_path| {
                 defer init.gpa.free(config_path);
                 _ = lua.loadFile(init.io, config_path) catch |err| blk: {
                     try printConfigError(init.io, config_path, err);
