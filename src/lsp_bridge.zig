@@ -40,6 +40,8 @@ const RequestKind = enum {
     workspace_symbols,
     rename,
     code_action,
+    formatting,
+    completion,
 };
 
 const Pending = struct {
@@ -65,6 +67,7 @@ pub const State = struct {
     last_signature: ?[]u8 = null,
     last_locations: ?lsp.responses.LocationList = null,
     last_symbols: ?lsp.responses.SymbolList = null,
+    last_completions: ?lsp.completion.List = null,
     pending_workspace_edit: ?lsp.workspace_edit.Plan = null,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) State {
@@ -87,6 +90,7 @@ pub const State = struct {
         if (self.last_signature) |text| self.allocator.free(text);
         if (self.last_locations) |*locations| locations.deinit();
         if (self.last_symbols) |*symbols| symbols.deinit();
+        if (self.last_completions) |*completions| completions.deinit();
         if (self.pending_workspace_edit) |*plan| plan.deinit();
         self.* = undefined;
     }
@@ -186,6 +190,14 @@ pub const State = struct {
                 if (self.pending_workspace_edit) |*old| old.deinit();
                 self.pending_workspace_edit = try lsp.workspace_edit.parseCodeActionResponse(self.allocator, body);
             },
+            .formatting => {
+                if (self.pending_workspace_edit) |*old| old.deinit();
+                self.pending_workspace_edit = try lsp.workspace_edit.parseTextEditResponse(self.allocator, body, request.uri);
+            },
+            .completion => {
+                if (self.last_completions) |*old| old.deinit();
+                self.last_completions = try lsp.completion.parse(self.allocator, body);
+            },
         }
     }
 
@@ -260,6 +272,32 @@ pub const State = struct {
         const id = try lsp.documents.codeAction(&self.client, uri, range, diagnostics);
         try self.track(id, .code_action, uri);
         return id;
+    }
+
+    pub fn requestFormatting(self: *State, buffer: *const buffer_module.Buffer, tab_size: u32, insert_spaces: bool) !u64 {
+        const uri = try self.uriForBuffer(buffer);
+        defer self.allocator.free(uri);
+        const id = try lsp.documents.formatting(&self.client, uri, tab_size, insert_spaces);
+        try self.track(id, .formatting, uri);
+        return id;
+    }
+
+    pub fn requestCompletion(self: *State, buffer: *const buffer_module.Buffer, byte_offset: usize) !u64 {
+        const uri = try self.uriForBuffer(buffer);
+        defer self.allocator.free(uri);
+        const id = try lsp.documents.completion(&self.client, uri, lsp.types.positionFromByteOffsetUtf16(buffer.text.items, byte_offset));
+        try self.track(id, .completion, uri);
+        return id;
+    }
+
+    pub fn completionCount(self: *const State) usize {
+        return if (self.last_completions) |completions| completions.items.len else 0;
+    }
+
+    pub fn completionLabel(self: *const State, index: usize) ?[]const u8 {
+        const completions = self.last_completions orelse return null;
+        if (index >= completions.items.len) return null;
+        return completions.items[index].label;
     }
 
     pub fn nextDiagnosticOffset(self: *const State, buffer: *const buffer_module.Buffer, current: usize, forward: bool) !?usize {
@@ -380,4 +418,17 @@ test "LSP bridge synchronizes buffers and consumes semantic responses" {
     defer std.testing.allocator.free(hover_response);
     try state.handleIncoming(hover_response);
     try std.testing.expectEqualStrings("i32", state.last_hover.?);
+
+    const completion_id = try state.requestCompletion(&buffer, 6);
+    const completion_response = try std.fmt.allocPrint(std.testing.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"isIncomplete\":false,\"items\":[{{\"label\":\"value\",\"insertText\":\"value\"}}]}}}}", .{completion_id});
+    defer std.testing.allocator.free(completion_response);
+    try state.handleIncoming(completion_response);
+    try std.testing.expectEqual(@as(usize, 1), state.completionCount());
+    try std.testing.expectEqualStrings("value", state.completionLabel(0).?);
+
+    const formatting_id = try state.requestFormatting(&buffer, 4, true);
+    const formatting_response = try std.fmt.allocPrint(std.testing.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[{{\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":0,\"character\":0}}}},\"newText\":\"// formatted\\n\"}}]}}", .{formatting_id});
+    defer std.testing.allocator.free(formatting_response);
+    try state.handleIncoming(formatting_response);
+    try std.testing.expectEqual(@as(usize, 1), try state.applyPendingWorkspaceEdit(&.{buffer}));
 }
