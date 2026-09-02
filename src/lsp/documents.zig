@@ -96,6 +96,24 @@ pub fn codeAction(client: *client_mod.Client, uri: []const u8, range: types.Rang
     });
 }
 
+pub fn formatting(client: *client_mod.Client, uri: []const u8, tab_size: u32, insert_spaces: bool) !u64 {
+    return client.sendRequest("textDocument/formatting", .{
+        .textDocument = .{ .uri = uri },
+        .options = .{
+            .tabSize = tab_size,
+            .insertSpaces = insert_spaces,
+        },
+    });
+}
+
+pub fn completion(client: *client_mod.Client, uri: []const u8, position: types.Position) !u64 {
+    return client.sendRequest("textDocument/completion", .{
+        .textDocument = .{ .uri = uri },
+        .position = position,
+        .context = .{ .triggerKind = 1 },
+    });
+}
+
 test "document synchronization and feature requests use LSP methods" {
     const std = @import("std");
     var client = client_mod.Client.init(std.testing.allocator, std.testing.io);
@@ -110,6 +128,10 @@ test "document synchronization and feature requests use LSP methods" {
     _ = try documentSymbols(&client, "file:///tmp/demo.zig");
     _ = try workspaceSymbols(&client, "demo");
     _ = try rename(&client, "file:///tmp/demo.zig", .{ .line = 0, .character = 6 }, "value");
+    _ = try formatting(&client, "file:///tmp/demo.zig", 4, true);
+    _ = try completion(&client, "file:///tmp/demo.zig", .{ .line = 0, .character = 6 });
     try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "textDocument/didOpen") != null);
     try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "textDocument/rename") != null);
+    try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "textDocument/formatting") != null);
+    try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "textDocument/completion") != null);
 }
