@@ -136,7 +136,7 @@ const TuiApp = struct {
         const split = std.mem.indexOfAny(u8, command, " \t") orelse command.len;
         const name = command[0..split];
         const args = if (split < command.len)
-            std.mem.trimLeft(u8, command[split..], " \t")
+            std.mem.trimStart(u8, command[split..], " \t")
         else
             "";
 
