@@ -87,7 +87,7 @@ pub fn parseSignatureLabel(allocator: std.mem.Allocator, body: []const u8) !?[]u
     if (first != .object) return null;
     const label = first.object.get("label") orelse return null;
     if (label != .string) return null;
-    return allocator.dupe(u8, label.string);
+    return try allocator.dupe(u8, label.string);
 }
 
 pub fn parseSymbols(allocator: std.mem.Allocator, body: []const u8, default_uri: []const u8) !SymbolList {
@@ -128,11 +128,13 @@ fn appendSymbolRecursive(
     const kind_value = value.object.get("kind") orelse return;
     if (name_value != .string or kind_value != .integer or kind_value.integer < 0) return;
 
-    var uri = default_uri;
+    var symbol_uri = default_uri;
     var range_value: ?std.json.Value = value.object.get("range");
     if (value.object.get("location")) |location| {
         if (location == .object) {
-            if (location.object.get("uri")) |uri_value| if (uri_value == .string) uri = uri_value.string;
+            if (location.object.get("uri")) |uri_value| {
+                if (uri_value == .string) symbol_uri = uri_value.string;
+            }
             range_value = location.object.get("range");
         }
     }
@@ -140,7 +142,7 @@ fn appendSymbolRecursive(
         try output.append(allocator, .{
             .name = try allocator.dupe(u8, name_value.string),
             .kind = @intCast(kind_value.integer),
-            .uri = try allocator.dupe(u8, uri),
+            .uri = try allocator.dupe(u8, symbol_uri),
             .range = try parseRange(range),
         });
     }
