@@ -33,20 +33,22 @@ Phase 2 language tooling completed with:
 
 ## v0.2.0 — Programmable Core
 
+**Status: complete.**
+
 **Goal:** establish the stable Zig-side extension contract before embedding Lua.
 
-- [ ] typed stable buffer/window/tab handles
-- [ ] public buffer/window/tab state API
-- [ ] typed options API
-- [ ] command registry and invocation API
-- [ ] global and buffer-local keymap API
-- [ ] typed event model
-- [ ] autocommand registry
-- [ ] deterministic callback ordering
-- [ ] safe snapshot semantics when callbacks mutate registrations
-- [ ] API-driven key handling emits editor events
-- [ ] headless API conformance tests
-- [ ] exact-head CI green on Ubuntu/macOS/Windows
+- [x] typed stable buffer/window/tab handles
+- [x] public buffer/window/tab state API
+- [x] typed options API
+- [x] command registry and invocation API
+- [x] global and buffer-local keymap API
+- [x] typed event model
+- [x] autocommand registry
+- [x] deterministic callback ordering
+- [x] safe snapshot semantics when callbacks mutate registrations
+- [x] API-driven key handling emits editor events
+- [x] headless API conformance tests
+- [x] exact-head CI green on Ubuntu/macOS/Windows
 
 **Exit condition:** core features have a documented Zig API boundary that Lua and future RPC bindings can call without arbitrary internal pointers.
 
