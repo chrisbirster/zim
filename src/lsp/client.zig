@@ -40,7 +40,7 @@ pub const Client = struct {
             self.transport.?.kill();
             self.transport = null;
         }
-        try self.beginInitialize(root_uri);
+        _ = try self.beginInitialize(root_uri);
     }
 
     pub fn beginInitialize(self: *Client, root_uri: []const u8) !u64 {

@@ -3,6 +3,20 @@ const lsp = @import("lsp/root.zig");
 const buffer_module = @import("buffer.zig");
 
 pub const BufferId = buffer_module.BufferId;
+pub const ProtocolPosition = lsp.types.Position;
+pub const ProtocolRange = lsp.types.Range;
+
+pub fn fileUriAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    return lsp.uri.fileUriAlloc(allocator, path);
+}
+
+pub fn filePathAlloc(allocator: std.mem.Allocator, uri: []const u8) ![]u8 {
+    return lsp.uri.filePathAlloc(allocator, uri);
+}
+
+pub fn byteOffsetFromProtocolPosition(text: []const u8, position: ProtocolPosition) usize {
+    return lsp.types.byteOffsetFromPositionUtf16(text, position);
+}
 
 const Document = struct {
     buffer_id: BufferId,
