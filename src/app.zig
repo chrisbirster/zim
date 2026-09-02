@@ -4,7 +4,7 @@ const editor = @import("editor.zig");
 const headless = @import("headless.zig");
 const tui = @import("tui.zig");
 
-pub const version = "0.1.0";
+pub const version = "0.2.0";
 
 const help_text =
     \\Zim — your new code overlord.
