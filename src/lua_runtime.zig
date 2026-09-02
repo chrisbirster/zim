@@ -208,7 +208,12 @@ pub const Runtime = struct {
 
     fn reportTopError(self: *Runtime, prefix: []const u8) void {
         const message = self.lua.toString(-1) catch "unknown Lua error";
-        self.editor.setStatusText(prefix, message);
+        const written = std.fmt.bufPrint(&self.editor.status_buffer, "{s}: {s}", .{ prefix, message }) catch {
+            self.editor.status_len = 0;
+            self.lua.pop(1);
+            return;
+        };
+        self.editor.status_len = written.len;
         self.lua.pop(1);
     }
 };
@@ -483,7 +488,7 @@ test "embedded Lua exposes options keymaps commands and autocommands" {
     try std.testing.expect(api.options.number);
     try std.testing.expectEqual(@as(u16, 8), api.options.tabstop);
     try std.testing.expectEqual(@as(usize, 1), api.commands.count());
-    try std.testing.expectEqual(@as(usize, 1), api.events.count());
+    try std.testing.expectEqual(@as(usize, 1), api.autocmds.count());
     try api.emit(&editor, .{ .kind = .text_changed, .buffer_id = editor.currentBuffer().id });
     try runtime.eval("assert(command_calls == 1); assert(event_calls == 1)");
 }
