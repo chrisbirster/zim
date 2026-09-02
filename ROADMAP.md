@@ -54,7 +54,7 @@ Phase 2 language tooling completed with:
 
 ## v0.3.0 — Lua Configuration
 
-**Status: implementation complete; final merge/main validation pending.**
+**Status: complete.**
 
 **Goal:** make Zim substantially configurable through `init.lua` without moving the native editing hot path out of Zig.
 
@@ -71,8 +71,8 @@ Phase 2 language tooling completed with:
 - [x] Lua conformance tests against the public Zig API
 - [x] Lua-created keymap/command/autocmd integration through native Hondo input
 - [x] documentation for the v0.3 Lua surface
-- [ ] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
-- [ ] exact merged-main CI green
+- [x] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
+- [x] exact merged-main CI green
 
 **Exit condition:** common editor customization no longer requires recompiling Zim, and the same public Zig API remains authoritative underneath Lua.
 
