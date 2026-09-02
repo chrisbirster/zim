@@ -158,8 +158,7 @@ pub const Manager = struct {
 
     fn configureLuaSearchPath(self: *Manager) !void {
         if (std.mem.indexOf(u8, self.plugins_root, "]=]") != null) return error.UnsupportedPluginPath;
-        const source = try std.fmt.allocPrintSentinel(
-            self.allocator,
+        const source = try std.fmt.allocPrintSentinel(self.allocator,
             \\local root = [=[{s}]=]
             \\package.path = package.path
             \\  .. ';' .. root .. '/?.lua'
