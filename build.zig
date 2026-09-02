@@ -4,6 +4,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const zlua_dep = b.dependency("zlua", .{
+        .target = target,
+        .optimize = optimize,
+        .lang = .lua54,
+    });
+    const zlua = zlua_dep.module("zlua");
+
     const tree_sitter_dep = b.dependency("tree_sitter", .{
         .target = target,
         .optimize = optimize,
@@ -28,8 +35,10 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/core_tests.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     core_test_module.addImport("language", language_module);
+    core_test_module.addImport("zlua", zlua);
     const core_tests = b.addTest(.{
         .root_module = core_test_module,
     });
@@ -92,6 +101,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "hondo", .module = hondo },
             .{ .name = "language", .module = language_module },
+            .{ .name = "zlua", .module = zlua },
         },
     });
     const exe = b.addExecutable(.{
@@ -116,6 +126,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "hondo", .module = hondo },
                 .{ .name = "language", .module = language_module },
+                .{ .name = "zlua", .module = zlua },
             },
         }),
     });
