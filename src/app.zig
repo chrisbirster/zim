@@ -3,9 +3,10 @@ const api_module = @import("api.zig");
 const cli = @import("cli.zig");
 const editor = @import("editor.zig");
 const lua_runtime = @import("lua_runtime.zig");
+const plugin_manager = @import("plugin_manager.zig");
 const tui = @import("tui.zig");
 
-pub const version = "0.3.0";
+pub const version = "0.4.0";
 
 const help_text =
     \\Zim — your new code overlord.
@@ -48,8 +49,23 @@ pub fn run(init: std.process.Init) !u8 {
             defer api.deinit();
             var lua = try lua_runtime.Runtime.init(init.gpa, &api, &state);
             defer lua.deinit();
+            try lua.eval("zim.version = '0.4.0'");
 
-            if (try configPathAlloc(init.gpa, init.environ_map)) |config_path| {
+            var plugins: ?*plugin_manager.Manager = null;
+            defer if (plugins) |manager| manager.destroy();
+
+            if (try configRootAlloc(init.gpa, init.environ_map)) |config_root| {
+                defer init.gpa.free(config_root);
+                plugins = try plugin_manager.Manager.create(
+                    init.gpa,
+                    init.io,
+                    config_root,
+                    &api,
+                    &state,
+                    &lua,
+                );
+
+                const config_path = try std.fmt.allocPrint(init.gpa, "{s}/init.lua", .{config_root});
                 defer init.gpa.free(config_path);
                 _ = lua.loadFile(init.io, config_path) catch |err| blk: {
                     try printConfigError(init.io, config_path, err);
@@ -85,18 +101,18 @@ pub fn run(init: std.process.Init) !u8 {
     }
 }
 
-fn configPathAlloc(
+fn configRootAlloc(
     allocator: std.mem.Allocator,
     environment: *const std.process.Environ.Map,
 ) !?[]u8 {
     if (environment.get("XDG_CONFIG_HOME")) |root| {
-        return try std.fmt.allocPrint(allocator, "{s}/zim/init.lua", .{root});
+        return try std.fmt.allocPrint(allocator, "{s}/zim", .{root});
     }
     if (environment.get("APPDATA")) |root| {
-        return try std.fmt.allocPrint(allocator, "{s}/zim/init.lua", .{root});
+        return try std.fmt.allocPrint(allocator, "{s}/zim", .{root});
     }
     if (environment.get("HOME")) |home| {
-        return try std.fmt.allocPrint(allocator, "{s}/.config/zim/init.lua", .{home});
+        return try std.fmt.allocPrint(allocator, "{s}/.config/zim", .{home});
     }
     return null;
 }

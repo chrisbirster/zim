@@ -2,7 +2,7 @@
 
 **Your new code overlord.**
 
-Zim is a fast, local-first, terminal-only modal programmer's editor written in Zig. It follows the editor fundamentals that make Neovim powerful—buffers, windows, composable modal editing, commands, keymaps, events, a stable extension API, Lua configuration, and remote automation—without being a Neovim fork or promising Neovim plugin compatibility.
+Zim is a fast, local-first, terminal-only modal programmer's editor written in Zig. It follows the editor fundamentals that make Neovim powerful—buffers, windows, composable modal editing, commands, keymaps, events, a stable extension API, Lua configuration, plugins, and remote automation—without being a Neovim fork or promising Neovim plugin compatibility.
 
 > THE CODE... IT FILLS ME... IT IS NEAT!
 
@@ -32,6 +32,8 @@ keyboard / terminal
 └──────────┬───────────────────────────┘
            │
            ├── embedded Lua 5.4 API
+           │      │
+           │      └── in-process plugins
            │
            └── MessagePack-RPC
                     │
@@ -42,33 +44,60 @@ keyboard / terminal
 
 The TUI and editor core stay in the same Zig process. Normal editing never depends on RPC, HTTP, a browser, or a GUI shell.
 
-Lua is the primary configuration and future in-process plugin language. External plugins and automation will use the same editor concepts over MessagePack-RPC.
+Lua is the primary configuration and in-process plugin language. External plugins and automation will use the same editor concepts over MessagePack-RPC in a later milestone.
 
 ## Current status
 
-Zim is a real modal editor under active pre-1.0 development. The current development version is **`v0.3.0 — Lua Configuration`**.
+Zim is a real modal editor under active pre-1.0 development. The current development version is **`v0.4.0 — Plugin System + Package Management`**.
 
-`v0.3.0` builds on the `v0.2.0` programmable Zig API and adds:
+`v0.4.0` builds on the programmable Zig API and v0.3 Lua layer with:
 
-- embedded, pinned Lua 5.4 through Ziglua with no system Lua dependency
-- startup configuration from `XDG_CONFIG_HOME/zim/init.lua`, `%APPDATA%/zim/init.lua`, or `~/.config/zim/init.lua`
-- the global `zim` Lua namespace
-- `zim.opt` for typed editor options
-- global and buffer-local `zim.keymap` mappings
-- Lua-defined commands through `zim.command`, callable as `:Command args`
-- typed `zim.autocmd` callbacks with once and buffer-local filters
-- buffer/window/tab handles through `zim.buf`, `zim.win`, and `zim.tab`
-- LSP request bindings through `zim.lsp`
-- protected Lua callback execution so callback failures do not crash the editor
-- Lua-to-Hondo integration coverage proving Lua-created keymaps, commands, and autocommands drive the native editor path
+- deterministic in-process Lua plugin discovery and startup
+- built-in Git-backed plugin install/update/remove
+- an exact-commit `plugins.lock`
+- plugin compatibility metadata through `zim-plugin.meta`
+- API-generation, Zim-version, and capability checks
+- failure isolation so one broken plugin does not block later plugins
+- rollback of partial command/keymap/autocommand registrations when plugin startup fails
+- Lua module search paths for plugin `require(...)`
+- `:PackAdd`, `:PackUpdate`, `:PackRemove`, and `:PackList`
+- `:Commands` and `:Keymaps` discovery
+- a real Git-backed package lifecycle test that installs, restarts/loads, updates, verifies exact SHAs, and removes a plugin
 - real pinned ZLS 0.16.0 subprocess smoke testing
 - Ubuntu, macOS, and Windows CI
 
 ```text
-ZIM 0.3.0 — YOUR NEW CODE OVERLORD
+ZIM 0.4.0 — YOUR NEW CODE OVERLORD
 ```
 
-See [Lua Configuration](docs/LUA_CONFIGURATION.md) for the supported API and an `init.lua` example.
+See [Plugins](docs/PLUGINS.md) for package management and plugin authoring, and [Lua Configuration](docs/LUA_CONFIGURATION.md) for the public Lua editor API.
+
+## Plugin package management
+
+Install a Git-backed plugin:
+
+```text
+:PackAdd https://github.com/example/zim-plugin.git
+```
+
+Install a specific tag, commit, or revision:
+
+```text
+:PackAdd https://github.com/example/zim-plugin.git v1.2.0
+```
+
+Update, list, or remove plugins:
+
+```text
+:PackUpdate zim-plugin
+:PackUpdate
+:PackList
+:PackRemove zim-plugin
+```
+
+Package mutations are applied on disk immediately and the resulting exact Git commit is recorded in `plugins.lock`. Restart Zim to load newly installed/updated code or unload removed code.
+
+Plugins are trusted in-process Lua code. Zim v0.4 does not claim Neovim API/plugin compatibility.
 
 ## Extension architecture
 
@@ -81,7 +110,7 @@ Zim has one conceptual public editor API. The stable Zig entrypoint is `src/api.
           │            │            │
        built-ins      Lua       MessagePack-RPC
                        │            │
-                    plugins     remote tools
+               config + plugins  remote tools
 ```
 
 Lua binds to public editor concepts rather than arbitrary internal pointers. The same boundary is intended to back future RPC extensions.
@@ -113,7 +142,7 @@ zim.autocmd.create('BufWritePost', function(ev)
 end)
 ```
 
-The v0.3 keymap API intentionally starts small: `lhs` and `rhs` are single Unicode codepoints. Multi-key mappings and richer command/key notation belong to later extension work.
+The current keymap bridge intentionally starts small: `lhs` and `rhs` are single Unicode codepoints. Richer mapping notation belongs to later extension work.
 
 ## Neovim fundamentals we are keeping
 
@@ -135,6 +164,7 @@ The v0.3 keymap API intentionally starts small: `lhs` and `rhs` are single Unico
 
 - Zig 0.16.0
 - Node.js for the bundled Solid/Hondo UI build
+- Git for `PackAdd`, `PackUpdate`, and managed plugin revisions
 
 Lua is embedded; a system Lua installation is not required.
 
@@ -156,7 +186,7 @@ zig build run -- .
 zig build run -- --headless
 ```
 
-Headless startup still initializes the public API and loads Lua configuration; it simply skips the Hondo TUI.
+Headless startup still initializes the public API, plugin manager, installed plugins, and Lua configuration; it simply skips the Hondo TUI.
 
 ### Format
 
@@ -170,10 +200,11 @@ zig fmt src build.zig
 zig build test
 ```
 
-CI additionally runs the pure Zig core gate, Hondo integration tests, the full suite, and the pinned real-ZLS smoke where configured.
+CI additionally runs the pure Zig core gate, the real Git-backed plugin package lifecycle test, Hondo integration tests, the full suite, and the pinned real-ZLS smoke where configured.
 
 ## Read next
 
+- [Plugins](docs/PLUGINS.md)
 - [Lua Configuration](docs/LUA_CONFIGURATION.md)
 - [Vision and product principles](docs/VISION.md)
 - [Architecture](docs/ARCHITECTURE.md)

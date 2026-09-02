@@ -78,19 +78,25 @@ Phase 2 language tooling completed with:
 
 ## v0.4.0 — Plugin System + Package Management
 
+**Status: implementation complete; final release validation pending.**
+
 **Goal:** make third-party in-process extensions first-class.
 
-- [ ] runtime/plugin search paths
-- [ ] Lua module/plugin discovery
-- [ ] deterministic plugin initialization lifecycle
-- [ ] plugin failure isolation/reporting
-- [ ] Git-backed install/update/remove
-- [ ] plugin lockfile and pinned revisions
-- [ ] version/capability compatibility metadata
-- [ ] `:PackAdd`, `:PackUpdate`, `:PackRemove`, `:PackList`
-- [ ] command/keymap/plugin discovery
+- [x] runtime/plugin search paths
+- [x] Lua module/plugin discovery
+- [x] deterministic plugin initialization lifecycle
+- [x] plugin failure isolation/reporting with partial registration rollback
+- [x] Git-backed install/update/remove
+- [x] plugin lockfile with exact commit revisions
+- [x] version/API/capability compatibility metadata
+- [x] `:PackAdd`, `:PackUpdate`, `:PackRemove`, `:PackList`
+- [x] command/keymap/plugin discovery
+- [x] real Git-backed install/update/remove lifecycle test
+- [x] plugin author/install documentation
+- [ ] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
+- [ ] exact merged-main CI green
 
-**Exit condition:** a user can install, pin, load, update, and diagnose useful Zim plugins without a third-party package manager.
+**Exit condition:** a user can install, pin, load, update, remove, list, and diagnose useful Zim plugins without a third-party package manager.
 
 ## v0.5.0 — Zen Workspace
 
