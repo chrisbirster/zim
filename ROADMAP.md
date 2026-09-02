@@ -78,7 +78,7 @@ Phase 2 language tooling completed with:
 
 ## v0.4.0 — Plugin System + Package Management
 
-**Status: implementation complete; final release validation pending.**
+**Status: complete.**
 
 **Goal:** make third-party in-process extensions first-class.
 
@@ -93,8 +93,8 @@ Phase 2 language tooling completed with:
 - [x] command/keymap/plugin discovery
 - [x] real Git-backed install/update/remove lifecycle test
 - [x] plugin author/install documentation
-- [ ] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
-- [ ] exact merged-main CI green
+- [x] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
+- [x] exact merged-main CI green
 
 **Exit condition:** a user can install, pin, load, update, remove, list, and diagnose useful Zim plugins without a third-party package manager.
 
