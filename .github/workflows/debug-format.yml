@@ -1,12 +1,11 @@
 name: Debug Zig Format
 
 on:
-  pull_request:
-    branches: [main]
+  push:
+    branches: [feature/v0.4-plugin-system]
 
 jobs:
   format-diff:
-    if: github.head_ref == 'feature/v0.4-plugin-system'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
