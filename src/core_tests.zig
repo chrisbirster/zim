@@ -6,6 +6,7 @@ test {
     _ = @import("api.zig");
     _ = @import("lua_runtime.zig");
     _ = @import("plugin_manager.zig");
+    _ = @import("plugin_package_tests.zig");
     _ = @import("language_bridge.zig");
     _ = @import("lsp/root.zig");
     _ = @import("lsp_bridge.zig");
