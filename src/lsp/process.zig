@@ -48,16 +48,16 @@ pub const Transport = struct {
         return child.wait(self.io);
     }
 
-    pub fn kill(self: *Transport) !void {
+    pub fn kill(self: *Transport) void {
         var child = self.child orelse return;
         self.child = null;
-        _ = try child.kill(self.io);
+        child.kill(self.io);
     }
 };
 
 test "native process transport spawns and captures Zig" {
     var transport = try Transport.spawn(std.testing.io, &.{ "zig", "version" });
-    errdefer transport.kill() catch {};
+    errdefer transport.kill();
     transport.closeInput();
     var buffer: [128]u8 = undefined;
     const count = transport.read(&buffer) catch |err| switch (err) {
