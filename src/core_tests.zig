@@ -4,6 +4,7 @@ test {
     _ = @import("cli.zig");
     _ = @import("editor.zig");
     _ = @import("api.zig");
+    _ = @import("lua_runtime.zig");
     _ = @import("language_bridge.zig");
     _ = @import("lsp/root.zig");
     _ = @import("lsp_bridge.zig");
