@@ -39,6 +39,20 @@ jobs:
       - name: Test pure Zig editor/headless core
         run: zig build test-core -Dheadless-only=true
 
+      - name: Install ZLS 0.16.0 for real-server smoke
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          curl -L --fail --retry 3 https://github.com/zigtools/zls/releases/download/0.16.0/zls-x86_64-linux.tar.xz -o "$RUNNER_TEMP/zls.tar.xz"
+          echo "ded6d562a0b86ee878b1ddf70ffab2797ce3cdca3b02d6077548f9d56dff96b6  $RUNNER_TEMP/zls.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/zls"
+          tar -xJf "$RUNNER_TEMP/zls.tar.xz" -C "$RUNNER_TEMP/zls"
+          echo "$RUNNER_TEMP/zls" >> "$GITHUB_PATH"
+
+      - name: Test real ZLS stdio lifecycle
+        if: runner.os == 'Linux'
+        run: zig build test-zls-smoke
+
       - name: Install Node
         uses: actions/setup-node@v4
         with:
