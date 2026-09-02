@@ -125,7 +125,7 @@ pub const Store = struct {
 fn severityFromWire(value: ?u8) ?types.DiagnosticSeverity {
     const raw = value orelse return null;
     return switch (raw) {
-        1 => .error,
+        1 => .error_level,
         2 => .warning,
         3 => .information,
         4 => .hint,
