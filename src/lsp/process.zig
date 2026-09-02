@@ -33,6 +33,14 @@ pub const Transport = struct {
         return error.ProcessNotRunning;
     }
 
+    pub fn readError(self: *Transport, buffer: []u8) !usize {
+        if (self.child) |*child| {
+            const stderr = child.stderr orelse return error.StderrClosed;
+            return stderr.readStreaming(self.io, &.{buffer});
+        }
+        return error.ProcessNotRunning;
+    }
+
     pub fn closeInput(self: *Transport) void {
         if (self.child) |*child| {
             if (child.stdin) |stdin| {
