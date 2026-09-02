@@ -75,6 +75,18 @@ pub const Plan = struct {
     }
 };
 
+pub fn parseTextEditResponse(allocator: std.mem.Allocator, body: []const u8, uri: []const u8) !Plan {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const result = parsed.value.object.get("result") orelse return Plan.init(allocator);
+    if (result == .null) return Plan.init(allocator);
+    if (result != .array) return error.InvalidTextEditResponse;
+    var plan = Plan.init(allocator);
+    errdefer plan.deinit();
+    try appendFileEdits(&plan, uri, result);
+    return plan;
+}
+
 pub fn applyTextEdits(
     allocator: std.mem.Allocator,
     original: []const u8,
@@ -168,6 +180,16 @@ test "WorkspaceEdit parses changes and documentChanges across files" {
     const updated = try applyTextEdits(std.testing.allocator, "x🙂z", plan.files.items[0].edits.items);
     defer std.testing.allocator.free(updated);
     try std.testing.expectEqualStrings("alpha🙂z", updated);
+}
+
+test "formatting TextEdit response becomes a single-file plan" {
+    var plan = try parseTextEditResponse(std.testing.allocator,
+        \\{"jsonrpc":"2.0","id":9,"result":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"newText":"formatted"}]}
+    , "file:///demo.zig");
+    defer plan.deinit();
+    try std.testing.expectEqual(@as(usize, 1), plan.files.items.len);
+    try std.testing.expectEqualStrings("file:///demo.zig", plan.files.items[0].uri);
+    try std.testing.expectEqualStrings("formatted", plan.files.items[0].edits.items[0].new_text);
 }
 
 pub fn parseCodeActionResponse(allocator: std.mem.Allocator, body: []const u8) !Plan {

@@ -9,6 +9,7 @@ pub const ClientState = @import("client.zig").State;
 pub const documents = @import("documents.zig");
 pub const diagnostics = @import("diagnostics.zig");
 pub const responses = @import("responses.zig");
+pub const completion = @import("completion.zig");
 pub const workspace_edit = @import("workspace_edit.zig");
 
 test {
@@ -22,5 +23,6 @@ test {
     _ = @import("documents.zig");
     _ = @import("diagnostics.zig");
     _ = @import("responses.zig");
+    _ = @import("completion.zig");
     _ = @import("workspace_edit.zig");
 }

@@ -49,6 +49,17 @@ pub fn build(b: *std.Build) void {
     const language_test_step = b.step("test-language", "Run headless Tree-sitter language-core tests");
     language_test_step.dependOn(&run_language_tests.step);
 
+    const zls_smoke_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lsp/zls_smoke.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_zls_smoke_tests = b.addRunArtifact(zls_smoke_tests);
+    const zls_smoke_step = b.step("test-zls-smoke", "Run real ZLS stdio lifecycle smoke test");
+    zls_smoke_step.dependOn(&run_zls_smoke_tests.step);
+
     const core_test_step = b.step("test-core", "Run editor/headless tests without Hondo");
     core_test_step.dependOn(&run_core_tests.step);
     core_test_step.dependOn(&run_language_tests.step);

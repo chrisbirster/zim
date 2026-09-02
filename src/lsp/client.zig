@@ -3,6 +3,8 @@ const framing = @import("framing.zig");
 const protocol = @import("protocol.zig");
 const process = @import("process.zig");
 
+const EmptyObject = struct {};
+
 pub const State = enum {
     stopped,
     initializing,
@@ -59,6 +61,14 @@ pub const Client = struct {
                     .documentSymbol = .{ .dynamicRegistration = false },
                     .rename = .{ .dynamicRegistration = false },
                     .codeAction = .{ .dynamicRegistration = false },
+                    .formatting = .{ .dynamicRegistration = false },
+                    .completion = .{
+                        .dynamicRegistration = false,
+                        .completionItem = .{
+                            .snippetSupport = false,
+                            .documentationFormat = &.{ "markdown", "plaintext" },
+                        },
+                    },
                 },
             },
         });
@@ -75,12 +85,12 @@ pub const Client = struct {
             if (parsed.value.object.get("error") != null) return error.InitializeFailed;
             self.initialize_id = null;
             self.state = .ready;
-            try self.sendNotification("initialized", .{});
+            try self.sendNotification("initialized", EmptyObject{});
             return;
         }
         if (self.shutdown_id != null and id == self.shutdown_id.?) {
             self.shutdown_id = null;
-            try self.sendNotification("exit", .{});
+            try self.sendNotification("exit", @as(?u8, null));
             if (self.transport) |*transport| transport.closeInput();
             self.state = .exited;
         }
@@ -88,7 +98,7 @@ pub const Client = struct {
 
     pub fn requestShutdown(self: *Client) !void {
         if (self.state != .ready) return error.InvalidState;
-        self.shutdown_id = try self.sendRequest("shutdown", .{});
+        self.shutdown_id = try self.sendRequest("shutdown", @as(?u8, null));
         self.state = .shutdown_requested;
     }
 
@@ -108,6 +118,7 @@ pub const Client = struct {
     }
 
     pub fn receiveOnce(self: *Client, scratch: []u8) !?[]u8 {
+        if (try self.decoder.next(self.allocator)) |body| return body;
         if (self.transport) |*transport| {
             const count = transport.read(scratch) catch |err| switch (err) {
                 error.EndOfStream => return null,
@@ -139,19 +150,24 @@ test "client negotiates initialize and shutdown lifecycle without a process" {
     const initialize_id = try client.beginInitialize("file:///tmp/project");
     try std.testing.expectEqual(State.initializing, client.state);
     try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "\"method\":\"initialize\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "\"formatting\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "\"completion\"") != null);
 
     const initialize_response = try std.fmt.allocPrint(std.testing.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"capabilities\":{{}}}}}}", .{initialize_id});
     defer std.testing.allocator.free(initialize_response);
     try client.handleBody(initialize_response);
     try std.testing.expectEqual(State.ready, client.state);
     try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "\"method\":\"initialized\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "\"params\":{}") != null);
 
     client.clearOutbox();
     try client.requestShutdown();
+    try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "\"params\":null") != null);
     const shutdown_id = client.shutdown_id.?;
     const shutdown_response = try std.fmt.allocPrint(std.testing.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":null}}", .{shutdown_id});
     defer std.testing.allocator.free(shutdown_response);
     try client.handleBody(shutdown_response);
     try std.testing.expectEqual(State.exited, client.state);
     try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "\"method\":\"exit\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "\"params\":null") != null);
 }
