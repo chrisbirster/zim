@@ -2,23 +2,13 @@
 
 **Your new code overlord.**
 
-Zim is a fast, local-first, terminal-only modal programmer's editor written in Zig and built around the fundamentals that make Neovim powerful: buffers, windows, modes, composable commands, Lua extensibility, a stable editor API, headless operation, and MessagePack-RPC for external plugins and automation.
+Zim is a fast, local-first, terminal-only modal programmer's editor written in Zig. It follows the editor fundamentals that make Neovim powerful—buffers, windows, composable modal editing, commands, keymaps, events, a stable extension API, Lua configuration, and remote automation—without being a Neovim fork or promising Neovim plugin compatibility.
 
 > THE CODE... IT FILLS ME... IT IS NEAT!
 
 ## Canonical repository
 
-Active development happens here:
-
-**https://github.com/chrisbirster/zim**
-
-This GitHub repository is the canonical source for Zim code, issues, pull requests, releases, architecture decisions, and roadmap work.
-
-## Mission
-
-Build a modern Neovim-class editor in Zig: immediate to start, excellent in a terminal, deeply programmable, understandable enough to hack on, and useful without an account, browser, JavaScript runtime, graphical shell, or cloud service.
-
-Zim is not a Neovim fork and does not promise Neovim API or plugin compatibility. It intentionally follows the same core editor fundamentals while giving us room to design a smaller Zig-native implementation.
+Active development happens at **https://github.com/chrisbirster/zim**.
 
 ## Product direction
 
@@ -29,7 +19,7 @@ keyboard / terminal
         │
         ▼
 ┌──────────────────────┐
-│       Zig TUI        │
+│      Hondo TUI       │
 └──────────┬───────────┘
            │ direct Zig calls
            ▼
@@ -38,7 +28,7 @@ keyboard / terminal
 │                                      │
 │ buffers   windows   modes   keymaps  │
 │ commands  undo      marks   events   │
-│ LSP       jobs      PTYs    search   │
+│ LSP       parsing   search  plugins  │
 └──────────┬───────────────────────────┘
            │
            ├── embedded Lua API
@@ -47,14 +37,51 @@ keyboard / terminal
                     │
                     ├── remote plugins
                     ├── automation
-                    └── embedding/headless control
+                    └── headless control
 ```
 
-The TUI lives in the same Zig process and calls the editor core directly. Normal editing never depends on RPC, HTTP, WebSockets, JavaScript, a browser, or a GUI framework.
+The TUI and editor core stay in the same Zig process. Normal editing never depends on RPC, HTTP, a browser, or a GUI shell.
 
-Lua plugins run against the public editor API in-process. External plugins and automation tools use the same editor concepts over MessagePack-RPC.
+Lua is the planned primary configuration and in-process plugin language. External plugins and automation will use the same editor concepts over MessagePack-RPC.
 
-SolidJS has **no role in the Zim editor runtime**. If the project uses SolidJS, it is for the separate documentation website only.
+## Current status
+
+Zim is a real modal editor under active pre-1.0 development.
+
+The `v0.1.x` development baseline already includes:
+
+- native Hondo terminal UI
+- Normal/Insert/Visual/Operator-Pending/command-line modes
+- composable operators, motions, counts, text objects, registers, macros, marks, jump/change history, folds, and undo/redo
+- buffers, windows, splits, and tab pages
+- Tree-sitter-backed language services
+- native LSP lifecycle, diagnostics, navigation, hover, signature help, symbols, rename/workspace edits, code actions, formatting, and completion protocol foundation
+- real pinned ZLS 0.16.0 subprocess smoke testing
+- Ubuntu, macOS, and Windows CI
+
+The current target is **`v0.2.0 — Programmable Core`**: stable typed handles, public editor/options/commands/keymaps APIs, and deterministic typed events/autocommands. Lua configuration follows in `v0.3.0`.
+
+```text
+ZIM 0.2.0 — YOUR NEW CODE OVERLORD
+```
+
+## Extension architecture
+
+Zim has one conceptual public editor API. The `v0.2.0` Zig-side contract lives under `src/api/` and is documented in [Programmable Core](docs/PROGRAMMABLE_CORE.md).
+
+The long-term layering is:
+
+```text
+                 public Zim API
+                       │
+          ┌────────────┼────────────┐
+          │            │            │
+       built-ins      Lua       MessagePack-RPC
+                       │            │
+                    plugins     remote tools
+```
+
+Lua and RPC should bind to public editor concepts rather than arbitrary internal pointers.
 
 ## Neovim fundamentals we are keeping
 
@@ -62,43 +89,20 @@ SolidJS has **no role in the Zim editor runtime**. If the project uses SolidJS, 
 - modal editing is core behavior, not a UI skin
 - operators, motions, counts, and text objects compose
 - commands and keymaps are first-class
-- tabs contain window layouts rather than being synonymous with files
+- tab pages own window layouts
+- events/autocommands provide extension hooks
 - marks/extmarks and decorations are editor primitives
-- an event/autocommand system supports extension without hard-coded hooks
-- Lua is the primary configuration and embedded plugin language
-- a stable editor API is shared by built-ins, Lua, automation, and remote plugins
-- MessagePack-RPC powers external plugins and automation clients
-- headless operation is a supported architecture, not a testing hack
-- language servers, jobs, terminals, and parsing attach to editor state rather than owning it
-
-## Status
-
-Zim is in very early development.
-
-The current executable starts, resolves the current working directory, and prints its startup identity. It is not yet a usable text editor.
-
-The next milestone is deliberately concrete: **open a file in a Zig TUI, enter Normal/Insert mode, edit text, save, and quit.**
-
-```text
-ZIM 0.1.0 — YOUR NEW CODE OVERLORD
-
-THE CODE... IT FILLS ME... IT IS NEAT!
-```
-
-## Read next
-
-- [Vision and product principles](docs/VISION.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Roadmap](ROADMAP.md)
-- [ADR 0003: Terminal-only product architecture](docs/architecture/0003-terminal-only-product.md)
+- Lua is the primary embedded configuration/plugin language
+- one stable editor API is shared by built-ins and extension layers
+- MessagePack-RPC powers future external plugins and automation
+- headless operation is an architectural feature
 
 ## Development
 
 ### Requirements
 
 - Zig 0.16.0
-
-Additional native dependencies for Lua, terminal support, syntax parsing, or platform integration will be documented only when they actually land.
+- Node.js for the bundled Solid/Hondo UI build
 
 ### Build
 
@@ -110,6 +114,12 @@ zig build
 
 ```bash
 zig build run -- .
+```
+
+### Headless
+
+```bash
+zig build run -- --headless
 ```
 
 ### Format
@@ -124,7 +134,12 @@ zig fmt src build.zig
 zig build test
 ```
 
+CI additionally runs the pure Zig core gate, Hondo integration tests, the full suite, and the pinned real-ZLS smoke where configured.
 
-## Neovim fidelity status
+## Read next
 
-The editor core now owns classic motions/operators/counts, paragraph and sentence text objects, Vim-style registers, macros, marks, jump/change history, rectangular Visual Block editing, and provider-independent fold state. Tree-sitter remains a separate language service until PR #15 lands; it augments rather than replaces classic Vim grammar.
+- [Vision and product principles](docs/VISION.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Programmable Core](docs/PROGRAMMABLE_CORE.md)
+- [Roadmap](ROADMAP.md)
+- [ADR 0003: Terminal-only product architecture](docs/architecture/0003-terminal-only-product.md)
