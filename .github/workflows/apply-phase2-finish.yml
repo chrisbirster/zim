@@ -1,0 +1,45 @@
+name: Apply Phase 2 Finish
+
+on:
+  pull_request:
+    types: [opened, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'feature/lsp-phase2-complete'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/lsp-phase2-complete
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Apply guarded editor wiring
+        run: python3 .github/apply_phase2_finish.py
+      - name: Format Zig sources
+        run: zig fmt src build.zig
+      - name: Verify complete headless Phase 2 graph
+        run: zig build test-core -Dheadless-only=true
+      - name: Install pinned ZLS 0.16.0
+        shell: bash
+        run: |
+          curl -L --fail --retry 3 https://github.com/zigtools/zls/releases/download/0.16.0/zls-x86_64-linux.tar.xz -o "$RUNNER_TEMP/zls.tar.xz"
+          echo "ded6d562a0b86ee878b1ddf70ffab2797ce3cdca3b02d6077548f9d56dff96b6  $RUNNER_TEMP/zls.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/zls"
+          tar -xJf "$RUNNER_TEMP/zls.tar.xz" -C "$RUNNER_TEMP/zls"
+          echo "$RUNNER_TEMP/zls" >> "$GITHUB_PATH"
+      - name: Verify real ZLS path
+        run: zig build test-zls-smoke
+      - name: Remove one-shot helpers
+        run: rm .github/apply_phase2_finish.py .github/workflows/apply-phase2-finish.yml
+      - name: Commit verified Phase 2 completion
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src build.zig .github/apply_phase2_finish.py .github/workflows/apply-phase2-finish.yml
+          git commit -m "feat(lsp): complete formatting and completion phase"
+          git push origin HEAD:feature/lsp-phase2-complete
