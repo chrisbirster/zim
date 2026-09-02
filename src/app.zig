@@ -49,11 +49,11 @@ pub fn run(init: std.process.Init) !u8 {
             var lua = try lua_runtime.Runtime.init(init.gpa, &api, &state);
             defer lua.deinit();
 
-            if (try configPathAlloc(init.gpa, init.environ_map)) |config_path| {
+            if (try configPathAlloc(init.gpa, &init.environ_map)) |config_path| {
                 defer init.gpa.free(config_path);
-                _ = lua.loadFile(init.io, config_path) catch |err| {
+                _ = lua.loadFile(init.io, config_path) catch |err| blk: {
                     try printConfigError(init.io, config_path, err);
-                    false
+                    break :blk false;
                 };
             }
 
@@ -87,7 +87,7 @@ pub fn run(init: std.process.Init) !u8 {
 
 fn configPathAlloc(
     allocator: std.mem.Allocator,
-    environment: std.process.Environ.Map,
+    environment: *const std.process.Environ.Map,
 ) !?[]u8 {
     if (environment.get("XDG_CONFIG_HOME")) |root| {
         return try std.fmt.allocPrint(allocator, "{s}/zim/init.lua", .{root});
