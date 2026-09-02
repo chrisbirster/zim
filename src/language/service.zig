@@ -84,6 +84,23 @@ pub const Service = struct {
         return document.applyEdit(result_allocator, new_text, new_revision, edit);
     }
 
+    pub fn sync(
+        self: *Service,
+        result_allocator: std.mem.Allocator,
+        buffer_id: types.BufferId,
+        new_text: []const u8,
+        new_revision: types.Revision,
+    ) !types.ChangedRangeList {
+        const document = self.getDocument(buffer_id) orelse return error.UnknownBuffer;
+        if (new_revision <= document.revision) return error.StaleRevision;
+        if (std.mem.eql(u8, document.text, new_text)) {
+            document.revision = new_revision;
+            return emptyChangedRangeList(result_allocator);
+        }
+        const edit = minimalEdit(document.text, new_text);
+        return document.applyEdit(result_allocator, new_text, new_revision, edit);
+    }
+
     pub fn highlights(
         self: *const Service,
         result_allocator: std.mem.Allocator,
@@ -341,6 +358,44 @@ pub const Service = struct {
     }
 };
 
+fn minimalEdit(old_text: []const u8, new_text: []const u8) types.Edit {
+    var start: usize = 0;
+    const shared = @min(old_text.len, new_text.len);
+    while (start < shared and old_text[start] == new_text[start]) : (start += 1) {}
+    while (start > 0 and
+        ((start < old_text.len and isUtf8Continuation(old_text[start])) or
+            (start < new_text.len and isUtf8Continuation(new_text[start]))))
+    {
+        start -= 1;
+    }
+
+    var old_end = old_text.len;
+    var new_end = new_text.len;
+    while (old_end > start and new_end > start and old_text[old_end - 1] == new_text[new_end - 1]) {
+        old_end -= 1;
+        new_end -= 1;
+    }
+    while (old_end < old_text.len and new_end < new_text.len and
+        (isUtf8Continuation(old_text[old_end]) or isUtf8Continuation(new_text[new_end])))
+    {
+        old_end += 1;
+        new_end += 1;
+    }
+
+    return .{
+        .start_byte = @intCast(start),
+        .old_end_byte = @intCast(old_end),
+        .new_end_byte = @intCast(new_end),
+        .start_point = document_mod.positionAt(old_text, start),
+        .old_end_point = document_mod.positionAt(old_text, old_end),
+        .new_end_point = document_mod.positionAt(new_text, new_end),
+    };
+}
+
+fn isUtf8Continuation(byte: u8) bool {
+    return byte & 0xc0 == 0x80;
+}
+
 const CapturedObjects = struct {
     function_around: ?types.Range,
     function_body: ?types.Range,
@@ -451,6 +506,10 @@ fn freeInjections(items: *std.ArrayList(types.InjectionRegion), allocator: std.m
         if (item.language_id) |language_id| allocator.free(language_id);
     }
     items.deinit(allocator);
+}
+
+fn emptyChangedRangeList(allocator: std.mem.Allocator) !types.ChangedRangeList {
+    return .{ .allocator = allocator, .items = try allocator.alloc(types.Range, 0) };
 }
 
 fn emptyHighlightList(allocator: std.mem.Allocator) !types.HighlightList {

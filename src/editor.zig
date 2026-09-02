@@ -1,6 +1,7 @@
 const std = @import("std");
 const buffer_module = @import("buffer.zig");
 const workspace = @import("workspace.zig");
+const language_bridge = @import("language_bridge.zig");
 
 pub const Buffer = buffer_module.Buffer;
 pub const BufferId = buffer_module.BufferId;
@@ -119,6 +120,11 @@ const FindRepeat = struct {
     target: u21,
 };
 
+const StructuralMotionPending = struct {
+    direction: language_bridge.MotionDirection,
+    count: usize,
+};
+
 const RegisterWrite = enum { yank, delete };
 
 const BlockInsert = struct {
@@ -154,6 +160,7 @@ pub const Editor = struct {
     next_window_id: WindowId = 1,
     next_tab_id: TabId = 1,
     project_root: ?[]u8 = null,
+    language_state: language_bridge.State,
 
     unnamed_register: Register = .{},
     named_registers: [26]Register = [_]Register{.{}} ** 26,
@@ -189,6 +196,7 @@ pub const Editor = struct {
     last_find: ?FindRepeat = null,
     pending_g: bool = false,
     pending_z: bool = false,
+    pending_structural_motion: ?StructuralMotionPending = null,
     operator_count: usize = 1,
 
     folds: std.ArrayList(Fold) = .empty,
@@ -214,6 +222,7 @@ pub const Editor = struct {
         var self = Editor{
             .allocator = allocator,
             .io = io,
+            .language_state = try language_bridge.State.init(allocator),
         };
         errdefer self.deinit();
 
@@ -233,6 +242,7 @@ pub const Editor = struct {
         for (self.tabs.items) |*tab| tab.deinit(self.allocator);
         self.tabs.deinit(self.allocator);
         if (self.project_root) |root| self.allocator.free(root);
+        self.language_state.deinit();
         self.unnamed_register.deinit(self.allocator);
         for (&self.named_registers) |*register| register.deinit(self.allocator);
         for (&self.numbered_registers) |*register| register.deinit(self.allocator);
@@ -264,6 +274,7 @@ pub const Editor = struct {
                 }
             },
         }
+        try self.syncCurrentLanguage(true);
     }
 
     pub fn text(self: *const Editor) []const u8 {
@@ -364,6 +375,34 @@ pub const Editor = struct {
     pub fn setText(self: *Editor, value: []const u8) !void {
         try self.currentBuffer().setLoadedText(self.allocator, value);
         self.currentWindow().cursor = 0;
+        try self.syncCurrentLanguage(true);
+    }
+
+    pub fn syntaxHighlightsForBuffer(self: *const Editor, buffer_id: BufferId) []const language_bridge.HighlightSpan {
+        return self.language_state.highlights(buffer_id);
+    }
+
+    pub fn symbolsForBuffer(self: *const Editor, buffer_id: BufferId) []const language_bridge.Symbol {
+        return self.language_state.symbols(buffer_id);
+    }
+
+    pub fn languageRevision(self: *const Editor, buffer_id: BufferId) ?u64 {
+        return self.language_state.revision(buffer_id);
+    }
+
+    pub fn syncCurrentLanguage(self: *Editor, force: bool) !void {
+        const buffer = self.currentBufferConst();
+        try self.language_state.syncBuffer(buffer, force);
+        const provider = self.language_state.folds(buffer.id);
+        const converted = try self.allocator.alloc(FoldRange, provider.len);
+        defer self.allocator.free(converted);
+        for (provider, converted) |source, *target| {
+            target.* = .{
+                .start_line = @intCast(source.range.start_point.row),
+                .end_line = @intCast(source.range.end_point.row),
+            };
+        }
+        try self.replaceProviderFolds(converted);
     }
 
     pub fn map(self: *Editor, mode: Mode, from: u21, to: u21) !void {
@@ -410,6 +449,9 @@ pub const Editor = struct {
     }
 
     pub fn handleKey(self: *Editor, incoming: Key) anyerror!HandleResult {
+        const before_window_id = self.currentWindowConst().id;
+        const before_buffer_id = self.currentBufferConst().id;
+        const before_revision = self.currentBufferConst().revision;
         const key = self.resolveKey(incoming);
         if (self.recording_macro) |macro_index| {
             const stop_key = self.mode == .normal and switch (key) {
@@ -431,6 +473,13 @@ pub const Editor = struct {
             .command_line => try self.handleCommandLine(key),
             .normal => try self.handleNormal(key),
         };
+        if (handled) {
+            const after_window = self.currentWindowConst();
+            const after_buffer = self.currentBufferConst();
+            if (after_window.id != before_window_id or after_buffer.id != before_buffer_id or after_buffer.revision != before_revision) {
+                try self.syncCurrentLanguage(false);
+            }
+        }
         return .{
             .handled = handled,
             .command_open = self.commandOpen(),
@@ -668,6 +717,20 @@ pub const Editor = struct {
             self.pending_z = false;
             return self.handleFoldCommand(cp);
         }
+        if (self.pending_structural_motion) |pending| {
+            self.pending_structural_motion = null;
+            const kind: language_bridge.StructuralKind = switch (cp) {
+                'f' => .function,
+                'c' => .class,
+                else => return false,
+            };
+            const origin = self.currentLocation();
+            if (try self.language_state.structuralMotion(self.currentBufferConst().id, kind, pending.direction, self.cursor(), pending.count)) |destination| {
+                self.setCursor(destination);
+                self.recordJump(origin, self.currentLocation()) catch {};
+            }
+            return true;
+        }
         if (self.recording_macro != null and cp == 'q') {
             self.recording_macro = null;
             self.setStatus("recording stopped", .{});
@@ -881,6 +944,13 @@ pub const Editor = struct {
             },
             '`' => blk: {
                 self.pending_mark_exact = true;
+                break :blk true;
+            },
+            '[', ']' => blk: {
+                self.pending_structural_motion = .{
+                    .direction = if (cp == ']') .next else .previous,
+                    .count = count,
+                };
                 break :blk true;
             },
             'z' => blk: {
@@ -1140,6 +1210,8 @@ pub const Editor = struct {
             self.nextTab();
         } else if (std.mem.eql(u8, name, "tabprevious") or std.mem.eql(u8, name, "tabp")) {
             self.previousTab();
+        } else if (std.mem.eql(u8, name, "symbols")) {
+            self.setStatus("{d} symbols", .{self.symbolsForBuffer(self.currentBufferConst().id).len});
         } else if (std.mem.eql(u8, name, "wincmd")) {
             if (args.len == 0 or std.mem.eql(u8, args, "w")) self.nextWindow() else if (std.mem.eql(u8, args, "W")) self.previousWindow();
         } else {
@@ -1273,7 +1345,17 @@ pub const Editor = struct {
             return .{ .start = start, .end = end };
         }
 
-        const pair = delimiterPair(cp) orelse return null;
+        const pair = delimiterPair(cp) orelse {
+            const kind: language_bridge.StructuralKind = switch (cp) {
+                'f' => .function,
+                'c' => .class,
+                'a' => .parameter,
+                else => return null,
+            };
+            const structural_scope: language_bridge.ObjectScope = if (scope == .inner) .inner else .around;
+            const structural = self.language_state.textObject(self.currentBufferConst().id, kind, structural_scope, at, count) catch return null;
+            return if (structural) |value| .{ .start = value.start, .end = value.end } else null;
+        };
         const line_start = lineStartAt(bytes, at);
         const line_end = lineEnd(bytes, at);
         var left: ?usize = null;
@@ -1700,6 +1782,7 @@ pub const Editor = struct {
         self.pending_find = null;
         self.pending_g = false;
         self.pending_z = false;
+        self.pending_structural_motion = null;
         self.pending_register_select = false;
         self.pending_macro_record = false;
         self.pending_macro_play = false;
@@ -2583,4 +2666,37 @@ test "fold commands own visibility independently of providers" {
     _ = try editor.handleKey(.{ .codepoint = 'z' });
     _ = try editor.handleKey(.{ .codepoint = 'R' });
     try std.testing.expect(!editor.lineHiddenByFold(editor.currentWindow().id, 2));
+}
+
+test "Tree-sitter augments the real editor without replacing Vim grammar" {
+    var editor = try Editor.init(std.testing.allocator, std.testing.io, "integration.zig");
+    defer editor.deinit();
+    try editor.setText(
+        \\const std = @import("std");
+        \\fn alpha() i32 {
+        \\    return 1;
+        \\}
+        \\fn beta(value: i32) i32 {
+        \\    return value + 1;
+        \\}
+    );
+
+    const buffer_id = editor.currentBufferConst().id;
+    try std.testing.expect(editor.syntaxHighlightsForBuffer(buffer_id).len > 0);
+    try std.testing.expect(editor.symbolsForBuffer(buffer_id).len >= 2);
+    try std.testing.expect(editor.folds.items.len > 0);
+    try std.testing.expectEqual(editor.currentBufferConst().revision, editor.languageRevision(buffer_id).?);
+
+    editor.setCursor(0);
+    _ = try editor.handleKey(.{ .codepoint = ']' });
+    _ = try editor.handleKey(.{ .codepoint = 'f' });
+    try std.testing.expect(editor.cursor() > 0);
+
+    const inside_alpha = std.mem.indexOf(u8, editor.text(), "return 1") orelse return error.TestUnexpectedResult;
+    editor.setCursor(inside_alpha);
+    _ = try editor.handleKey(.{ .codepoint = 'd' });
+    _ = try editor.handleKey(.{ .codepoint = 'i' });
+    _ = try editor.handleKey(.{ .codepoint = 'f' });
+    try std.testing.expect(std.mem.indexOf(u8, editor.text(), "return 1") == null);
+    try std.testing.expectEqual(editor.currentBufferConst().revision, editor.languageRevision(buffer_id).?);
 }

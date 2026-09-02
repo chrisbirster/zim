@@ -16,12 +16,22 @@ pub fn build(b: *std.Build) void {
     });
     const tree_sitter_zig = tree_sitter_zig_dep.artifact("tree-sitter-zig");
 
+    const language_module = b.createModule(.{
+        .root_source_file = b.path("src/language/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    language_module.addImport("tree-sitter", tree_sitter);
+    language_module.linkLibrary(tree_sitter_zig);
+
+    const core_test_module = b.createModule(.{
+        .root_source_file = b.path("src/core_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    core_test_module.addImport("language", language_module);
     const core_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/core_tests.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = core_test_module,
     });
     const run_core_tests = b.addRunArtifact(core_tests);
 
@@ -68,7 +78,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
-        .imports = &.{.{ .name = "hondo", .module = hondo }},
+        .imports = &.{
+            .{ .name = "hondo", .module = hondo },
+            .{ .name = "language", .module = language_module },
+        },
     });
     const exe = b.addExecutable(.{
         .name = "zim",
@@ -89,7 +102,10 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
-            .imports = &.{.{ .name = "hondo", .module = hondo }},
+            .imports = &.{
+                .{ .name = "hondo", .module = hondo },
+                .{ .name = "language", .module = language_module },
+            },
         }),
     });
     integration_tests.step.dependOn(&build_ui.step);
