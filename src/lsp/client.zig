@@ -116,6 +116,7 @@ pub const Client = struct {
     }
 
     pub fn receiveOnce(self: *Client, scratch: []u8) !?[]u8 {
+        if (try self.decoder.next(self.allocator)) |body| return body;
         if (self.transport) |*transport| {
             const count = transport.read(scratch) catch |err| switch (err) {
                 error.EndOfStream => return null,
