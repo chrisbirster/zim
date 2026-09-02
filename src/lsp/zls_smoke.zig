@@ -12,16 +12,33 @@ fn pumpUntil(client: *lsp.Client, target: lsp.ClientState) !void {
     }
 }
 
+fn reportStderr(client: *lsp.Client) void {
+    if (client.transport) |*transport| {
+        var buffer: [4096]u8 = undefined;
+        const count = transport.readError(&buffer) catch return;
+        if (count > 0) std.debug.print("ZLS stderr: {s}\n", .{buffer[0..count]});
+    }
+}
+
 test "real ZLS initializes and shuts down over native stdio transport" {
     var client = lsp.Client.init(std.testing.allocator, std.testing.io);
     defer client.deinit();
 
     try client.spawn(&.{"zls"}, "file:///tmp");
-    try pumpUntil(&client, .ready);
+    pumpUntil(&client, .ready) catch |err| {
+        reportStderr(&client);
+        return err;
+    };
     try std.testing.expectEqual(lsp.ClientState.ready, client.state);
 
-    try client.requestShutdown();
-    try pumpUntil(&client, .exited);
+    client.requestShutdown() catch |err| {
+        reportStderr(&client);
+        return err;
+    };
+    pumpUntil(&client, .exited) catch |err| {
+        reportStderr(&client);
+        return err;
+    };
     try std.testing.expectEqual(lsp.ClientState.exited, client.state);
 
     if (client.transport) |*transport| {
