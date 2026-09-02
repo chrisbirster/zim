@@ -16,7 +16,7 @@ pub const Location = struct {
 };
 
 pub const DiagnosticSeverity = enum(u8) {
-    error = 1,
+    error_level = 1,
     warning = 2,
     information = 3,
     hint = 4,
