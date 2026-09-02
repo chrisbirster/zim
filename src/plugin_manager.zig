@@ -239,18 +239,48 @@ pub const Manager = struct {
             return;
         }
 
+        const command_count = self.api.commands.entries.items.len;
+        const keymap_snapshot = try self.allocator.dupe(api_module.keymaps.Entry, self.api.keymaps.entries.items);
+        defer self.allocator.free(keymap_snapshot);
+        const autocmd_count = self.api.autocmds.entries.items.len;
+
         const entry_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ root, manifest.entry });
         defer self.allocator.free(entry_path);
         const loaded = self.lua.loadFile(self.io, entry_path) catch |err| {
+            self.rollbackRegistrations(command_count, keymap_snapshot, autocmd_count);
             try self.appendFailure(name, manifest.version, manifest.capabilities, .failed, @errorName(err));
             return;
         };
         if (!loaded) {
+            self.rollbackRegistrations(command_count, keymap_snapshot, autocmd_count);
             try self.appendFailure(name, manifest.version, manifest.capabilities, .failed, "plugin entry file not found");
             return;
         }
 
         try self.appendFailure(name, manifest.version, manifest.capabilities, .loaded, "loaded");
+    }
+
+    fn rollbackRegistrations(
+        self: *Manager,
+        command_count: usize,
+        keymap_snapshot: []const api_module.keymaps.Entry,
+        autocmd_count: usize,
+    ) void {
+        while (self.api.commands.entries.items.len > command_count) {
+            const name = self.api.commands.entries.items[self.api.commands.entries.items.len - 1].name;
+            _ = self.api.commandDelete(name);
+        }
+        while (self.api.autocmds.entries.items.len > autocmd_count) {
+            const id = self.api.autocmds.entries.items[self.api.autocmds.entries.items.len - 1].id;
+            _ = self.api.autocmdDelete(id);
+        }
+        while (self.api.keymaps.entries.items.len > keymap_snapshot.len) {
+            const entry = self.api.keymaps.entries.items[self.api.keymaps.entries.items.len - 1];
+            _ = self.api.keymapDelete(self.editor, entry.scope, entry.mode, entry.from);
+        }
+        for (keymap_snapshot) |entry| {
+            _ = self.api.keymapSet(self.editor, entry.scope, entry.mode, entry.from, entry.to) catch {};
+        }
     }
 
     fn appendFailure(
@@ -836,9 +866,14 @@ test "plugin discovery is sorted and isolates a broken Lua plugin" {
         \\version=0.1.0
         \\zim_api=1
         \\min_zim=0.4.0
-        \\capabilities=commands
+        \\capabilities=commands,keymaps,autocmds
     });
-    try tmp.dir.writeFile(io, .{ .sub_path = "plugins/z-bad/plugin.lua", .data = "this is not valid lua !!!" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "plugins/z-bad/plugin.lua", .data =
+        \\zim.command.create('BrokenPartial', function() end)
+        \\zim.keymap.set('normal', 'x', 'i')
+        \\zim.autocmd.create('TextChanged', function() end)
+        \\error('broken after registration')
+    });
 
     var root_buffer: [std.fs.max_path_bytes]u8 = undefined;
     const root_len = try tmp.dir.realPath(io, &root_buffer);
@@ -861,6 +896,7 @@ test "plugin discovery is sorted and isolates a broken Lua plugin" {
     try std.testing.expectEqualStrings("z-bad", manager.plugins.items[1].name);
     try std.testing.expectEqual(PluginState.failed, manager.plugins.items[1].state);
     try std.testing.expect(api.commands.find("PluginHello") != null);
+    try std.testing.expect(api.commands.find("BrokenPartial") == null);
     try std.testing.expectEqual(@as(usize, 1), api.keymaps.count());
     try std.testing.expectEqual(@as(usize, 1), api.autocmds.count());
 }
