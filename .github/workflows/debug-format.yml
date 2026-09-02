@@ -1,0 +1,20 @@
+name: Debug Zig Format
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  format-diff:
+    if: github.head_ref == 'feature/v0.4-plugin-system'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Print canonical formatter diff
+        run: |
+          zig fmt src/plugin_manager.zig
+          git diff -- src/plugin_manager.zig
+          git diff --exit-code -- src/plugin_manager.zig
