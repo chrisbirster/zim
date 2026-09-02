@@ -90,7 +90,7 @@ pub const Client = struct {
         }
         if (self.shutdown_id != null and id == self.shutdown_id.?) {
             self.shutdown_id = null;
-            try self.sendNotification("exit", EmptyObject{});
+            try self.sendNotification("exit", @as(?u8, null));
             if (self.transport) |*transport| transport.closeInput();
             self.state = .exited;
         }
@@ -169,4 +169,5 @@ test "client negotiates initialize and shutdown lifecycle without a process" {
     try client.handleBody(shutdown_response);
     try std.testing.expectEqual(State.exited, client.state);
     try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "\"method\":\"exit\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, client.outbox.items, "\"params\":null") != null);
 }
