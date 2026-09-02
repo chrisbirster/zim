@@ -366,10 +366,7 @@ pub const Manager = struct {
         const index = self.findLockIndex(name) orelse return error.PluginNotInstalled;
         const path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.plugins_root, name });
         defer self.allocator.free(path);
-        std.Io.Dir.cwd().deleteTree(self.io, path) catch |err| switch (err) {
-            error.FileNotFound => {},
-            else => return err,
-        };
+        try std.Io.Dir.cwd().deleteTree(self.io, path);
         self.removeLockAt(index);
         try self.writeLock();
         self.setStatusFmt("removed {s}; restart Zim to unload", .{name});
