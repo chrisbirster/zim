@@ -54,21 +54,27 @@ Phase 2 language tooling completed with:
 
 ## v0.3.0 — Lua Configuration
 
-**Goal:** make Zim substantially configurable through `~/.config/zim/init.lua`.
+**Status: implementation complete; final merge/main validation pending.**
 
-- [ ] select/embed a portable Lua runtime
-- [ ] load `~/.config/zim/init.lua`
-- [ ] expose the `zim` namespace
-- [ ] `zim.opt`
-- [ ] `zim.keymap`
-- [ ] `zim.command`
-- [ ] `zim.autocmd`
-- [ ] buffer/window/tab APIs
-- [ ] LSP-facing API bindings
-- [ ] useful Lua error traces without crashing the editor
-- [ ] Lua conformance tests against the public Zig API
+**Goal:** make Zim substantially configurable through `init.lua` without moving the native editing hot path out of Zig.
 
-**Exit condition:** common editor customization no longer requires recompiling Zim.
+- [x] embed pinned Lua 5.4 through Ziglua with no system Lua dependency
+- [x] load `XDG_CONFIG_HOME/zim/init.lua`, `%APPDATA%/zim/init.lua`, or `~/.config/zim/init.lua`
+- [x] expose the `zim` namespace
+- [x] `zim.opt`
+- [x] global and buffer-local `zim.keymap`
+- [x] `zim.command` registration/deletion/execution
+- [x] typed `zim.autocmd` registration/deletion with once and buffer filters
+- [x] buffer/window/tab handle APIs
+- [x] LSP-facing API bindings
+- [x] protected Lua callback errors without crashing the editor
+- [x] Lua conformance tests against the public Zig API
+- [x] Lua-created keymap/command/autocmd integration through native Hondo input
+- [x] documentation for the v0.3 Lua surface
+- [ ] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
+- [ ] exact merged-main CI green
+
+**Exit condition:** common editor customization no longer requires recompiling Zim, and the same public Zig API remains authoritative underneath Lua.
 
 ## v0.4.0 — Plugin System + Package Management
 

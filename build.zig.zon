@@ -1,6 +1,6 @@
 .{
     .name = .zim,
-    .version = "0.2.0",
+    .version = "0.3.0",
     .fingerprint = 0x211bf99f3e5427cd, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
@@ -16,6 +16,10 @@
         .tree_sitter_zig = .{
             .url = "git+https://github.com/Nikutsuki/tree-sitter-zig#4ef1e6a14051f881f42254bf31e753e5f4c26031",
             .hash = "tree_sitter_zig-1.1.2-41Vlhkd4XACCDI_YH7223Sm60zZc0U4rNM39DG2jGoU6",
+        },
+        .zlua = .{
+            .url = "git+https://github.com/natecraddock/ziglua#d2cb6191ec20f888ab04ad222c9bcf9b194bfbf2",
+            .hash = "zlua-0.1.0-hGRpC1mUBQCNQf4CnmRTM4I7gxE3YpCvZ-p2EarlcyER",
         },
     },
     .paths = .{

@@ -1,7 +1,10 @@
 const std = @import("std");
 const hondo = @import("hondo");
+const api_module = @import("api.zig");
+const api_observer = @import("api/observer.zig");
 const editor_module = @import("editor.zig");
 const editor_view = @import("editor_view.zig");
+const lua_runtime = @import("lua_runtime.zig");
 const terminal_io = @import("terminal_io.zig");
 
 const ui_bundle = @embedFile("generated/zim_ui.js");
@@ -13,6 +16,7 @@ const sequence_wait_ms = 10;
 const TuiApp = struct {
     allocator: std.mem.Allocator,
     editor: *editor_module.Editor,
+    api: *api_module.Api,
     scene: *hondo.scene.Scene,
     runtime: hondo.runtime.Runtime,
     renderer: hondo.terminal.renderer.Renderer,
@@ -22,6 +26,7 @@ const TuiApp = struct {
     fn init(
         allocator: std.mem.Allocator,
         editor: *editor_module.Editor,
+        api: *api_module.Api,
         width: usize,
         height: usize,
     ) !TuiApp {
@@ -49,6 +54,7 @@ const TuiApp = struct {
         var app = TuiApp{
             .allocator = allocator,
             .editor = editor,
+            .api = api,
             .scene = scene,
             .runtime = runtime,
             .renderer = renderer,
@@ -79,9 +85,11 @@ const TuiApp = struct {
         }
     }
 
-    fn dispatch(self: *TuiApp, event: hondo.terminal.input.Event) !hondo.native_view_runtime.DispatchResult {
+    fn dispatch(self: *TuiApp, incoming: hondo.terminal.input.Event) !hondo.native_view_runtime.DispatchResult {
+        const before = api_observer.capture(self.editor);
+        const event = try self.prepareEvent(incoming);
         const grid = self.renderer.grid();
-        return hondo.native_view_runtime.dispatchInteractive(
+        const result = try hondo.native_view_runtime.dispatchInteractive(
             self.allocator,
             &self.runtime,
             self.scene,
@@ -91,6 +99,58 @@ const TuiApp = struct {
             grid.width,
             grid.height,
         );
+        try api_observer.emitChanges(self.api, self.editor, before);
+        return result;
+    }
+
+    fn prepareEvent(self: *TuiApp, incoming: hondo.terminal.input.Event) !hondo.terminal.input.Event {
+        return switch (incoming) {
+            .key => |key| .{ .key = try self.prepareKey(key) },
+            else => incoming,
+        };
+    }
+
+    fn prepareKey(self: *TuiApp, key: hondo.terminal.input.Key) !hondo.terminal.input.Key {
+        if (key == .enter and self.editor.commandOpen()) {
+            if (try self.executePublicCommandLine()) return .escape;
+        }
+
+        return switch (key) {
+            .codepoint => |cp| blk: {
+                const buffer_id = self.editor.currentBufferConst().id;
+                if (self.api.keymaps.find(.{ .buffer = buffer_id }, self.editor.mode, cp)) |mapping| {
+                    break :blk .{ .codepoint = mapping.to };
+                }
+                break :blk key;
+            },
+            else => key,
+        };
+    }
+
+    fn executePublicCommandLine(self: *TuiApp) !bool {
+        var display_buffer: [1024]u8 = undefined;
+        const display = self.editor.commandDisplay(&display_buffer);
+        if (display.len < 2 or display[0] != ':') return false;
+        const command = std.mem.trim(u8, display[1..], " \t");
+        if (command.len == 0) return false;
+
+        const split = std.mem.indexOfAny(u8, command, " \t") orelse command.len;
+        const name = command[0..split];
+        const args = if (split < command.len)
+            std.mem.trimStart(u8, command[split..], " \t")
+        else
+            "";
+
+        if (std.mem.eql(u8, name, "w") or std.mem.eql(u8, name, "write")) {
+            _ = try self.api.writeCurrent(self.editor);
+            return true;
+        }
+
+        if (self.api.commands.find(name) != null) {
+            try self.api.commandExecute(self.editor, name, args);
+            return true;
+        }
+        return false;
     }
 
     fn render(self: *TuiApp) !void {
@@ -109,7 +169,7 @@ const TuiApp = struct {
     }
 };
 
-pub fn run(init: std.process.Init, editor: *editor_module.Editor) !u8 {
+pub fn run(init: std.process.Init, editor: *editor_module.Editor, api: *api_module.Api) !u8 {
     var session = try hondo.terminal.session.Session.begin(
         terminal_io.stdin_fd,
         terminal_io.stdout_fd,
@@ -138,7 +198,7 @@ pub fn run(init: std.process.Init, editor: *editor_module.Editor) !u8 {
     };
     var size_tracker = hondo.terminal.size.Tracker.initKnown(initial_size);
 
-    var app = try TuiApp.init(init.gpa, editor, initial_size.width, initial_size.height);
+    var app = try TuiApp.init(init.gpa, editor, api, initial_size.width, initial_size.height);
     defer app.deinit();
     try app.writeFrame();
 
@@ -219,7 +279,9 @@ fn sceneContainsText(scene: *hondo.scene.Scene, expected: []const u8) bool {
 test "Hondo chrome reacts while the expanded editor grammar stays native" {
     var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
     defer editor.deinit();
-    var app = try TuiApp.init(std.testing.allocator, &editor, 80, 24);
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 80, 24);
     defer app.deinit();
 
     try std.testing.expect(sceneContainsText(app.scene, "NORMAL"));
@@ -252,7 +314,9 @@ test "Hondo chrome reacts while the expanded editor grammar stays native" {
 test "Hondo status reflects native split commands" {
     var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
     defer editor.deinit();
-    var app = try TuiApp.init(std.testing.allocator, &editor, 80, 24);
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 80, 24);
     defer app.deinit();
 
     _ = try app.dispatch(.{ .key = .{ .codepoint = ':' } });
@@ -260,4 +324,49 @@ test "Hondo status reflects native split commands" {
     _ = try app.dispatch(.{ .key = .enter });
     try std.testing.expectEqual(@as(usize, 2), editor.activeTab().window_ids.items.len);
     try std.testing.expect(sceneContainsText(app.scene, "W2"));
+}
+
+test "buffer-local public keymaps stay on the native Hondo input path" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+    _ = try api.keymapSet(&editor, .{ .buffer = editor.currentBuffer().id }, .normal, 'z', 'i');
+    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 80, 24);
+    defer app.deinit();
+
+    const result = try app.dispatch(.{ .key = .{ .codepoint = 'z' } });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, result.path);
+    try std.testing.expectEqual(editor_module.Mode.insert, editor.mode);
+}
+
+test "Lua configuration drives native Hondo keymaps commands and autocmds" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+    var lua = try lua_runtime.Runtime.init(std.testing.allocator, &api, &editor);
+    defer lua.deinit();
+
+    try lua.eval(
+        \\mode_events = 0
+        \\zim.autocmd.create('ModeChanged', function(ev) mode_events = mode_events + 1 end)
+        \\zim.keymap.set('normal', 'z', 'i', { buffer = zim.buf.current() })
+        \\zim.command.create('LuaHello', function(args) zim.buf.set_text(args) end)
+    );
+
+    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 80, 24);
+    defer app.deinit();
+
+    const mapped = try app.dispatch(.{ .key = .{ .codepoint = 'z' } });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, mapped.path);
+    try std.testing.expectEqual(editor_module.Mode.insert, editor.mode);
+    try lua.eval("assert(mode_events == 1)");
+
+    _ = try app.dispatch(.{ .key = .escape });
+    _ = try app.dispatch(.{ .key = .{ .codepoint = ':' } });
+    for ("LuaHello configured") |byte| _ = try app.dispatch(.{ .key = .{ .codepoint = byte } });
+    _ = try app.dispatch(.{ .key = .enter });
+    try std.testing.expectEqualStrings("configured", editor.text());
+    try std.testing.expectEqual(editor_module.Mode.normal, editor.mode);
 }
