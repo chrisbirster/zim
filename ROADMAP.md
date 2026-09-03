@@ -121,7 +121,7 @@ Phase 2 language tooling completed with:
 - [x] coherent 0.5.0 executable/Lua/plugin/build versioning
 - [x] Hondo integration coverage for focus/collapse/responsive/native-key behavior
 - [x] user-facing Zen Workspace documentation
-- [ ] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
+- [x] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
 - [ ] exact merged-main CI green
 
 **Exit condition:** Zim has its recognizable workspace layout without making the UI framework own editor semantics.
