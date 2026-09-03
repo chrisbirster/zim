@@ -48,11 +48,11 @@ fn create(
     context: hondo.native_view.Context,
     props_json: []const u8,
 ) !?*anyopaque {
+    _ = context;
     _ = props_json;
     const editor = bound_editor orelse return BindError.NoBoundEditor;
     const state = try allocator.create(State);
     state.* = .{ .editor = editor };
-    try publishState(state, context);
     return state;
 }
 

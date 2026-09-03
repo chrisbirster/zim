@@ -177,7 +177,7 @@ fn updateUiSize(runtime: *hondo.runtime.Runtime, width: usize, height: usize) !v
     var buffer: [160]u8 = undefined;
     const script = try std.fmt.bufPrint(
         &buffer,
-        "globalThis.__zimUiResize?.({d}, {d});",
+        "if (globalThis.__zimUiResize) globalThis.__zimUiResize({d}, {d});",
         .{ width, height },
     );
     try runtime.eval(script, "zim-ui-resize.js");
