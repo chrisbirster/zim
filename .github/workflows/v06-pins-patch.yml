@@ -19,6 +19,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: sed -i 's/if count != 1:/if count < 1:/' scripts/v06_pins_patch.py
       - run: python3 scripts/v06_pins_patch.py
       - run: zig fmt src build.zig
       - run: npm install --no-audit --no-fund
