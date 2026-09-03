@@ -37,6 +37,7 @@ pub const Store = struct {
     io: std.Io,
     entries: std.ArrayList(Entry) = .empty,
     next_id: PinId = 1,
+    revision: u64 = 0,
     root: ?[]u8 = null,
     storage_path: ?[]u8 = null,
 
@@ -71,6 +72,7 @@ pub const Store = struct {
         self.root = owned_root;
         self.storage_path = storage_path;
         try self.load();
+        self.revision +%= 1;
     }
 
     pub fn count(self: *const Store) usize {
@@ -118,6 +120,7 @@ pub const Store = struct {
             self.next_id -= 1;
         }
         try self.save();
+        self.revision +%= 1;
         return id;
     }
 
@@ -131,6 +134,7 @@ pub const Store = struct {
         }
         self.entries.items.len -= 1;
         try self.save();
+        self.revision +%= 1;
         return true;
     }
 
@@ -149,6 +153,7 @@ pub const Store = struct {
         }
         self.entries.items[to] = moving;
         try self.save();
+        self.revision +%= 1;
         return true;
     }
 

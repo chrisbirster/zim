@@ -52,6 +52,12 @@ const bootstrap =
     \\function zim.win.buffer(window) return n.window_buffer(window) end
     \\zim.tab = {}
     \\function zim.tab.current() return n.current_tab() end
+    \\zim.pin = {}
+    \\function zim.pin.add(label) return n.pin_add(label) end
+    \\function zim.pin.remove(slot) return n.pin_remove(slot) end
+    \\function zim.pin.move(from_slot, to_slot) return n.pin_move(from_slot, to_slot) end
+    \\function zim.pin.jump(slot) return n.pin_jump(slot) end
+    \\function zim.pin.list() return n.pin_list() end
     \\zim.lsp = {}
     \\function zim.lsp.start() return n.lsp('start') end
     \\function zim.lsp.hover() return n.lsp('hover') end
@@ -144,11 +150,16 @@ pub const Runtime = struct {
             .{ .name = "current_window", .func = zlua.wrap(nativeCurrentWindow) },
             .{ .name = "window_buffer", .func = zlua.wrap(nativeWindowBuffer) },
             .{ .name = "current_tab", .func = zlua.wrap(nativeCurrentTab) },
+            .{ .name = "pin_add", .func = zlua.wrap(nativePinAdd) },
+            .{ .name = "pin_remove", .func = zlua.wrap(nativePinRemove) },
+            .{ .name = "pin_move", .func = zlua.wrap(nativePinMove) },
+            .{ .name = "pin_jump", .func = zlua.wrap(nativePinJump) },
+            .{ .name = "pin_list", .func = zlua.wrap(nativePinList) },
             .{ .name = "lsp", .func = zlua.wrap(nativeLsp) },
         };
 
         self.lua.createTable(0, 2);
-        _ = self.lua.pushString("0.5.0");
+        _ = self.lua.pushString("0.6.0");
         self.lua.setField(-2, "version");
         self.lua.newLib(&native_fns);
         self.lua.setField(-2, "_native");
@@ -360,6 +371,63 @@ fn nativeCurrentTab(lua: *Lua) i32 {
     return 1;
 }
 
+fn nativePinAdd(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    const label = if (lua.getTop() >= 1 and !lua.isNoneOrNil(1)) lua.checkString(1) else null;
+    const id = runtime.api.pinAdd(runtime.editor, label) catch lua.raiseErrorStr("failed to add pin", .{});
+    if (id) |value| {
+        lua.pushInteger(@intCast(value));
+    } else {
+        lua.pushNil();
+    }
+    return 1;
+}
+
+fn nativePinRemove(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    const slot: usize = @intCast(lua.toInteger(1) catch lua.raiseErrorStr("pin slot must be an integer", .{}));
+    lua.pushBoolean(runtime.api.pinRemove(runtime.editor, slot) catch lua.raiseErrorStr("failed to remove pin", .{}));
+    return 1;
+}
+
+fn nativePinMove(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    const from_slot: usize = @intCast(lua.toInteger(1) catch lua.raiseErrorStr("source pin slot must be an integer", .{}));
+    const to_slot: usize = @intCast(lua.toInteger(2) catch lua.raiseErrorStr("destination pin slot must be an integer", .{}));
+    lua.pushBoolean(runtime.api.pinMove(runtime.editor, from_slot, to_slot) catch lua.raiseErrorStr("failed to move pin", .{}));
+    return 1;
+}
+
+fn nativePinJump(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    const slot: usize = @intCast(lua.toInteger(1) catch lua.raiseErrorStr("pin slot must be an integer", .{}));
+    lua.pushBoolean(runtime.api.pinJump(runtime.editor, slot, true) catch lua.raiseErrorStr("failed to jump to pin", .{}));
+    return 1;
+}
+
+fn nativePinList(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    const entries = runtime.api.pinEntries(runtime.editor);
+    lua.createTable(@intCast(entries.len), 0);
+    for (entries, 0..) |entry, index| {
+        lua.createTable(0, 5);
+        lua.pushInteger(@intCast(entry.id));
+        lua.setField(-2, "id");
+        _ = lua.pushString(entry.path);
+        lua.setField(-2, "path");
+        lua.pushInteger(@intCast(entry.line));
+        lua.setField(-2, "line");
+        lua.pushInteger(@intCast(entry.column));
+        lua.setField(-2, "column");
+        if (entry.label) |label| {
+            _ = lua.pushString(label);
+            lua.setField(-2, "label");
+        }
+        lua.setIndexRaw(-2, @intCast(index + 1));
+    }
+    return 1;
+}
+
 fn nativeLsp(lua: *Lua) i32 {
     const runtime = runtimeFor(lua);
     const action = lua.checkString(1);
@@ -475,7 +543,7 @@ test "embedded Lua exposes options keymaps commands and autocommands" {
     defer runtime.deinit();
 
     try runtime.eval(
-        \\assert(zim.version == '0.5.0')
+        \\assert(zim.version == '0.6.0')
         \\zim.opt.number = true
         \\zim.opt.tabstop = 8
         \\zim.keymap.set('normal', 'z', 'i')
@@ -509,4 +577,27 @@ test "Lua buffer and handle API is backed by the public Zig API" {
         \\assert(zim.tab.current() > 0)
     );
     try std.testing.expectEqualStrings("from lua", editor.text());
+}
+
+test "Lua Pins API is backed by the public Zig Pins API" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, "demo.zig");
+    defer editor.deinit();
+    try editor.setText("one\ntwo\nthree\n");
+    editor.setCursorFromLineColumn(1, 1);
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &api, &editor);
+    defer runtime.deinit();
+
+    try runtime.eval(
+        \\local id = zim.pin.add('middle')
+        \\assert(id ~= nil)
+        \\local pins = zim.pin.list()
+        \\assert(#pins == 1)
+        \\assert(pins[1].label == 'middle')
+        \\assert(pins[1].line == 2)
+        \\assert(zim.pin.jump(1) == true)
+    );
+    try std.testing.expectEqual(@as(usize, 1), api.pinCount(&editor));
+    try std.testing.expectEqual(@as(usize, 2), editor.cursorPosition().line);
 }

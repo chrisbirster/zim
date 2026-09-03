@@ -454,3 +454,41 @@ test "Lua configuration drives native Hondo keymaps commands and autocmds" {
     try std.testing.expectEqualStrings("configured", editor.text());
     try std.testing.expectEqual(editor_module.Mode.normal, editor.mode);
 }
+
+test "Pins switcher renders in Hondo while navigation stays native" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, "demo.zig");
+    defer editor.deinit();
+    try editor.setText("one\ntwo\nthree\n");
+    editor.setCursorFromLineColumn(1, 1);
+    _ = try editor.pinAddCurrent("middle");
+    editor.setCursor(0);
+
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 120, 30);
+    defer app.deinit();
+
+    _ = try app.dispatch(.{ .key = .{ .codepoint = 'g' } });
+    const opened = try app.dispatch(.{ .key = .{ .codepoint = 'p' } });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, opened.path);
+    try std.testing.expect(editor.pin_switcher_open);
+    try std.testing.expect(sceneContainsText(app.scene, "PIN SWITCHER"));
+
+    const jumped = try app.dispatch(.{ .key = .{ .codepoint = '1' } });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, jumped.path);
+    try std.testing.expect(!editor.pin_switcher_open);
+    try std.testing.expectEqual(@as(usize, 2), editor.cursorPosition().line);
+    try std.testing.expectEqual(@as(usize, 2), editor.cursorPosition().column);
+
+    editor.setCursor(0);
+    _ = try app.dispatch(.{ .key = .{ .codepoint = '\'' } });
+    const linewise = try app.dispatch(.{ .key = .{ .codepoint = '1' } });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, linewise.path);
+    try std.testing.expectEqual(@as(usize, 2), editor.cursorPosition().line);
+    try std.testing.expectEqual(@as(usize, 1), editor.cursorPosition().column);
+
+    try app.runtime.eval(
+        "if (globalThis.__zimJsKeyEvents !== 0) throw new Error('pin navigation crossed into JavaScript');",
+        "zim-pin-native-key-proof.js",
+    );
+}

@@ -3,6 +3,7 @@ const buffer_module = @import("buffer.zig");
 const workspace = @import("workspace.zig");
 const language_bridge = @import("language_bridge.zig");
 const lsp_bridge = @import("lsp_bridge.zig");
+const pins_module = @import("pins.zig");
 
 pub const Buffer = buffer_module.Buffer;
 pub const BufferId = buffer_module.BufferId;
@@ -163,6 +164,9 @@ pub const Editor = struct {
     project_root: ?[]u8 = null,
     language_state: language_bridge.State,
     lsp_state: lsp_bridge.State,
+    pins: pins_module.Store,
+    pin_switcher_open: bool = false,
+    pin_switcher_index: usize = 0,
 
     unnamed_register: Register = .{},
     named_registers: [26]Register = [_]Register{.{}} ** 26,
@@ -226,6 +230,7 @@ pub const Editor = struct {
             .io = io,
             .language_state = try language_bridge.State.init(allocator),
             .lsp_state = lsp_bridge.State.init(allocator, io),
+            .pins = pins_module.Store.init(allocator, io),
         };
         errdefer self.deinit();
 
@@ -247,6 +252,7 @@ pub const Editor = struct {
         if (self.project_root) |root| self.allocator.free(root);
         self.language_state.deinit();
         self.lsp_state.deinit();
+        self.pins.deinit();
         self.unnamed_register.deinit(self.allocator);
         for (&self.named_registers) |*register| register.deinit(self.allocator);
         for (&self.numbered_registers) |*register| register.deinit(self.allocator);
@@ -288,6 +294,86 @@ pub const Editor = struct {
 
     pub fn currentPath(self: *const Editor) ?[]const u8 {
         return self.currentBufferConst().path;
+    }
+
+    pub fn pinProjectRoot(self: *const Editor) []const u8 {
+        if (self.project_root) |root| return root;
+        if (self.currentPath()) |path| return std.fs.path.dirname(path) orelse ".";
+        return ".";
+    }
+
+    pub fn configurePins(self: *Editor, config_root: []const u8) !void {
+        try self.pins.configure(config_root, self.pinProjectRoot());
+    }
+
+    pub fn pinAddCurrent(self: *Editor, label: ?[]const u8) !?pins_module.PinId {
+        const path = self.currentPath() orelse {
+            self.setStatus("PinAdd requires a file-backed buffer", .{});
+            return null;
+        };
+        const position = self.cursorPosition();
+        const id = try self.pins.add(path, position.line, position.column, label);
+        self.setStatus("pin {d}: {s}:{d}:{d}", .{ self.pins.count(), path, position.line, position.column });
+        return id;
+    }
+
+    pub fn pinRemoveSlot(self: *Editor, slot: usize) !bool {
+        if (!(try self.pins.removeSlot(slot))) {
+            self.setStatus("pin {d} does not exist", .{slot});
+            return false;
+        }
+        if (self.pin_switcher_index >= self.pins.count() and self.pin_switcher_index != 0) self.pin_switcher_index -= 1;
+        if (self.pins.count() == 0) self.pin_switcher_open = false;
+        self.setStatus("removed pin {d}", .{slot});
+        return true;
+    }
+
+    pub fn pinMoveSlot(self: *Editor, from_slot: usize, to_slot: usize) !bool {
+        if (!(try self.pins.moveSlot(from_slot, to_slot))) {
+            self.setStatus("invalid pin move {d} -> {d}", .{ from_slot, to_slot });
+            return false;
+        }
+        self.setStatus("moved pin {d} -> {d}", .{ from_slot, to_slot });
+        return true;
+    }
+
+    pub fn pinJumpSlot(self: *Editor, slot: usize, exact: bool) !bool {
+        const entry = self.pins.entryAtSlot(slot) orelse {
+            self.setStatus("pin {d} does not exist", .{slot});
+            return false;
+        };
+        const resolved = try self.pins.resolvePathAlloc(entry);
+        defer self.allocator.free(resolved);
+
+        const current_matches = if (self.currentPath()) |path| std.mem.eql(u8, path, resolved) else false;
+        if (!current_matches) {
+            _ = std.Io.Dir.cwd().statFile(self.io, resolved, .{}) catch |err| switch (err) {
+                error.FileNotFound => {
+                    self.setStatus("pin {d} target missing: {s}", .{ slot, resolved });
+                    return false;
+                },
+                else => return err,
+            };
+            if (!(try self.editPath(resolved))) return false;
+        }
+        self.setCursorFromLineColumn(entry.line - 1, if (exact) entry.column - 1 else 0);
+        self.setStatus("pin {d}: {s}:{d}:{d}", .{ slot, resolved, entry.line, entry.column });
+        return true;
+    }
+
+    pub fn openPinSwitcher(self: *Editor) bool {
+        if (self.pins.count() == 0) {
+            self.setStatus("no pins; use :PinAdd first", .{});
+            return false;
+        }
+        self.pin_switcher_open = true;
+        if (self.pin_switcher_index >= self.pins.count()) self.pin_switcher_index = 0;
+        self.setStatus("pins: 1-9 jump · j/k select · Enter jump · Esc close", .{});
+        return true;
+    }
+
+    pub fn closePinSwitcher(self: *Editor) void {
+        self.pin_switcher_open = false;
     }
 
     pub fn currentBuffer(self: *Editor) *Buffer {
@@ -622,7 +708,7 @@ pub const Editor = struct {
             try self.current_change.append(self.allocator, key);
         }
 
-        const handled = switch (self.mode) {
+        const handled = if (self.pin_switcher_open) try self.handlePinSwitcher(key) else switch (self.mode) {
             .insert => try self.handleInsert(key),
             .operator_pending => try self.handleOperatorPending(key),
             .visual, .visual_line, .visual_block => try self.handleVisual(key),
@@ -776,6 +862,43 @@ pub const Editor = struct {
         return true;
     }
 
+    fn handlePinSwitcher(self: *Editor, key: Key) !bool {
+        if (self.pins.count() == 0) {
+            self.pin_switcher_open = false;
+            return true;
+        }
+        return switch (key) {
+            .escape => blk: {
+                self.closePinSwitcher();
+                break :blk true;
+            },
+            .enter => blk: {
+                const slot = self.pin_switcher_index + 1;
+                const jumped = try self.pinJumpSlot(slot, true);
+                if (jumped) self.closePinSwitcher();
+                break :blk true;
+            },
+            .up => blk: {
+                self.pin_switcher_index = if (self.pin_switcher_index == 0) self.pins.count() - 1 else self.pin_switcher_index - 1;
+                break :blk true;
+            },
+            .down => blk: {
+                self.pin_switcher_index = (self.pin_switcher_index + 1) % self.pins.count();
+                break :blk true;
+            },
+            .codepoint => |cp| blk: {
+                if (cp >= '1' and cp <= '9') {
+                    const slot: usize = @intCast(cp - '0');
+                    if (slot <= self.pins.count() and try self.pinJumpSlot(slot, true)) self.closePinSwitcher();
+                    break :blk true;
+                }
+                if (cp == 'j') self.pin_switcher_index = (self.pin_switcher_index + 1) % self.pins.count() else if (cp == 'k') self.pin_switcher_index = if (self.pin_switcher_index == 0) self.pins.count() - 1 else self.pin_switcher_index - 1 else if (cp == 'q') self.closePinSwitcher();
+                break :blk true;
+            },
+            else => true,
+        };
+    }
+
     fn handleNormal(self: *Editor, key: Key) !bool {
         if (self.pending_find) |pending| {
             self.pending_find = null;
@@ -868,6 +991,7 @@ pub const Editor = struct {
             const linewise = self.pending_mark_line;
             self.pending_mark_line = false;
             self.pending_mark_exact = false;
+            if (cp >= '1' and cp <= '9') return self.pinJumpSlot(@intCast(cp - '0'), !linewise);
             const index = letterIndex(cp) orelse return false;
             return self.jumpToMark(index, linewise);
         }
@@ -914,6 +1038,7 @@ pub const Editor = struct {
                 self.count_prefix = 0;
                 return true;
             }
+            if (cp == 'p') return self.openPinSwitcher();
             if (cp == ';') return self.changeListMove(-1);
             if (cp == ',') return self.changeListMove(1);
         }
@@ -1368,6 +1493,45 @@ pub const Editor = struct {
             self.nextTab();
         } else if (std.mem.eql(u8, name, "tabprevious") or std.mem.eql(u8, name, "tabp")) {
             self.previousTab();
+        } else if (std.mem.eql(u8, name, "PinAdd") or std.mem.eql(u8, name, "pinadd")) {
+            _ = try self.pinAddCurrent(if (args.len == 0) null else args);
+        } else if (std.mem.eql(u8, name, "PinRemove") or std.mem.eql(u8, name, "pinremove")) {
+            const slot = std.fmt.parseInt(usize, args, 10) catch {
+                self.setStatus("usage: :PinRemove <slot>", .{});
+                return;
+            };
+            _ = try self.pinRemoveSlot(slot);
+        } else if (std.mem.eql(u8, name, "PinMove") or std.mem.eql(u8, name, "pinmove")) {
+            var tokens = std.mem.tokenizeAny(u8, args, " \t");
+            const from_text = tokens.next() orelse {
+                self.setStatus("usage: :PinMove <from> <to>", .{});
+                return;
+            };
+            const to_text = tokens.next() orelse {
+                self.setStatus("usage: :PinMove <from> <to>", .{});
+                return;
+            };
+            if (tokens.next() != null) {
+                self.setStatus("usage: :PinMove <from> <to>", .{});
+                return;
+            }
+            const from_slot = std.fmt.parseInt(usize, from_text, 10) catch {
+                self.setStatus("invalid PinMove source", .{});
+                return;
+            };
+            const to_slot = std.fmt.parseInt(usize, to_text, 10) catch {
+                self.setStatus("invalid PinMove destination", .{});
+                return;
+            };
+            _ = try self.pinMoveSlot(from_slot, to_slot);
+        } else if (std.mem.eql(u8, name, "PinJump") or std.mem.eql(u8, name, "pinjump")) {
+            const slot = std.fmt.parseInt(usize, args, 10) catch {
+                self.setStatus("usage: :PinJump <slot>", .{});
+                return;
+            };
+            _ = try self.pinJumpSlot(slot, true);
+        } else if (std.mem.eql(u8, name, "PinList") or std.mem.eql(u8, name, "pins") or std.mem.eql(u8, name, "pinlist")) {
+            if (args.len != 0) self.setStatus("usage: :PinList", .{}) else _ = self.openPinSwitcher();
         } else if (std.mem.eql(u8, name, "symbols")) {
             self.setStatus("{d} tree-sitter, {d} LSP symbols", .{ self.symbolsForBuffer(self.currentBufferConst().id).len, self.lspSymbolCount() });
         } else if (std.mem.eql(u8, name, "lspstart")) {

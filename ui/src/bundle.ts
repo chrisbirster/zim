@@ -8,6 +8,7 @@ import {
 import {
   Column,
   NativeView,
+  Popup,
   Row,
   Spacer,
   Text,
@@ -33,7 +34,11 @@ const [windows, setWindows] = createSignal(1);
 const [tabs, setTabs] = createSignal(1);
 const [diagnostics, setDiagnostics] = createSignal(0);
 const [symbols, setSymbols] = createSignal(0);
+type PinView = { id: number; path: string; line: number; column: number; label?: string };
 const [references, setReferences] = createSignal(0);
+const [pins, setPins] = createSignal<PinView[]>([]);
+const [pinSwitcherOpen, setPinSwitcherOpen] = createSignal(false);
+const [pinSwitcherIndex, setPinSwitcherIndex] = createSignal(0);
 const [terminalWidth, setTerminalWidth] = createSignal(120);
 const [terminalHeight, setTerminalHeight] = createSignal(30);
 const [projectCollapsed, setProjectCollapsed] = createSignal(false);
@@ -57,6 +62,24 @@ globals.__zimJsKeyEvents = 0;
 function payloadObject(payload: HondoValue): Record<string, HondoValue> | undefined {
   if (!payload || Array.isArray(payload) || typeof payload !== 'object') return undefined;
   return payload as Record<string, HondoValue>;
+}
+
+function pinsPayload(value: HondoValue): PinView[] {
+  if (!Array.isArray(value)) return [];
+  const result: PinView[] = [];
+  for (const candidate of value) {
+    const item = payloadObject(candidate);
+    if (!item) continue;
+    if (typeof item.id !== 'number' || typeof item.path !== 'string' || typeof item.line !== 'number' || typeof item.column !== 'number') continue;
+    result.push({
+      id: item.id,
+      path: item.path,
+      line: item.line,
+      column: item.column,
+      label: typeof item.label === 'string' ? item.label : undefined,
+    });
+  }
+  return result;
 }
 
 function keyPayload(event: HondoNodeEvent): { kind?: string; codepoint?: number } | undefined {
@@ -130,6 +153,9 @@ function onNativeState(event: HondoNodeEvent): void {
   if (typeof value.diagnostics === 'number') setDiagnostics(value.diagnostics);
   if (typeof value.symbols === 'number') setSymbols(value.symbols);
   if (typeof value.references === 'number') setReferences(value.references);
+  if (value.pins !== undefined) setPins(pinsPayload(value.pins));
+  if (typeof value.pinSwitcherOpen === 'boolean') setPinSwitcherOpen(value.pinSwitcherOpen);
+  if (typeof value.pinSwitcherIndex === 'number') setPinSwitcherIndex(value.pinSwitcherIndex);
   if (typeof value.terminalWidth === 'number') setTerminalWidth(value.terminalWidth);
   if (typeof value.terminalHeight === 'number') setTerminalHeight(value.terminalHeight);
   flush();
@@ -202,6 +228,16 @@ const projectPanel = Column({
       Text({ style: { dim: true }, children: () => projectLabel() }),
       Text({ children: () => `Current: ${path()}` }),
       Text({ children: () => `Open buffers: ${buffers()}` }),
+      Text({ style: { bold: true, foreground: 'bright-yellow' }, children: () => `PINS (${pins().length})` }),
+      ...pins().slice(0, 9).map((pin, index) =>
+        Text({
+          get children() {
+            const name = pin.label || pin.path;
+            return `${index + 1} ${name} :${pin.line}`;
+          },
+          style: { dim: true },
+        }),
+      ),
       Spacer({ grow: 1 }),
       Text({ style: { dim: true }, children: 'c collapse · Tab focus' }),
     ];
@@ -261,10 +297,43 @@ const contextPanel = Column({
   },
 });
 
+const pinSwitcher = Popup({
+  get x() {
+    return Math.max(0, Math.floor((terminalWidth() - 52) / 2));
+  },
+  get y() {
+    return Math.max(1, Math.floor((terminalHeight() - Math.min(14, pins().length + 5)) / 2));
+  },
+  zIndex: 20,
+  style: { width: 52, paddingX: 1, background: '#20242c' },
+  children: Column({
+    children: [
+      Text({ style: { bold: true, foreground: 'bright-magenta' }, children: 'PIN SWITCHER' }),
+      Text({ style: { dim: true }, children: '1-9 jump · j/k select · Enter jump · Esc close' }),
+      () => pins().map((pin, index) =>
+        Text({
+          get style() {
+            return {
+              bold: index === pinSwitcherIndex(),
+              reverse: index === pinSwitcherIndex(),
+              foreground: index === pinSwitcherIndex() ? 'bright-cyan' : 'bright-white',
+            } as const;
+          },
+          get children() {
+            const label = pin.label ? `${pin.label} · ` : '';
+            return `${index + 1} ${label}${pin.path}:${pin.line}:${pin.column}`;
+          },
+        }),
+      ),
+    ],
+  }),
+});
+
 const disposeRender = render(() =>
   Column({
     style: { minWidth: 1, minHeight: 1, background: '#080b10' },
     children: [
+      () => (pinSwitcherOpen() ? pinSwitcher : null),
       Row({
         style: { height: 1, background: '#161b22' },
         children: [
