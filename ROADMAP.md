@@ -100,7 +100,7 @@ Phase 2 language tooling completed with:
 
 ## v0.5.0 — Zen Workspace
 
-**Status: implementation complete; final validation pending.**
+**Status: complete.**
 
 **Goal:** deliver Zim's opinionated workspace UX on top of public primitives.
 
@@ -122,7 +122,9 @@ Phase 2 language tooling completed with:
 - [x] Hondo integration coverage for focus/collapse/responsive/native-key behavior
 - [x] user-facing Zen Workspace documentation
 - [x] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
-- [ ] exact merged-main CI green
+- [x] exact merged-main CI green
+
+Validation evidence: squash-merged main commit `cbc41cf9fde6065ffe078080aabd63dbf49f9c05` passed CI #165 on Ubuntu, macOS, and Windows; Ubuntu also passed the pinned real-ZLS 0.16.0 smoke.
 
 **Exit condition:** Zim has its recognizable workspace layout without making the UI framework own editor semantics.
 
