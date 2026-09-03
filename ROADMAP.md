@@ -100,18 +100,29 @@ Phase 2 language tooling completed with:
 
 ## v0.5.0 — Zen Workspace
 
+**Status: implementation complete; final validation pending.**
+
 **Goal:** deliver Zim's opinionated workspace UX on top of public primitives.
 
-- [ ] centered editor zone
-- [ ] left Project zone
-- [ ] right Context zone
-- [ ] collapsible breathing-space panels
-- [ ] Hondo-native focus/input semantics
-- [ ] Symbols view
-- [ ] Diagnostics view
-- [ ] References view
-- [ ] Git/quickfix/test context surfaces
-- [ ] preserve the Zig-native editor hot path
+- [x] centered editor zone with breathing space
+- [x] left Project zone
+- [x] right Context zone
+- [x] collapsible Project/Context rails
+- [x] responsive collapse behavior for narrow terminals
+- [x] Hondo-native focus traversal between Project, Editor, and Context
+- [x] handled editor keystrokes remain on the native Zig/Hondo path
+- [x] Symbols context surface with native result summary
+- [x] Diagnostics context surface with native diagnostic summary
+- [x] References context surface with reference-specific result summary
+- [x] Git context surface
+- [x] Quickfix context surface
+- [x] Tests context surface
+- [x] coarse project/LSP state bridge through NativeView notifications
+- [x] coherent 0.5.0 executable/Lua/plugin/build versioning
+- [x] Hondo integration coverage for focus/collapse/responsive/native-key behavior
+- [x] user-facing Zen Workspace documentation
+- [x] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
+- [ ] exact merged-main CI green
 
 **Exit condition:** Zim has its recognizable workspace layout without making the UI framework own editor semantics.
 

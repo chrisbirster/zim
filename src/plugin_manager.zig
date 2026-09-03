@@ -3,7 +3,7 @@ const api_module = @import("api.zig");
 const editor_module = @import("editor.zig");
 const lua_runtime = @import("lua_runtime.zig");
 
-pub const zim_version = "0.4.0";
+pub const zim_version = "0.5.0";
 pub const plugin_api_version: u32 = 1;
 
 const manifest_name = "zim-plugin.meta";

@@ -66,6 +66,7 @@ pub const State = struct {
     last_hover: ?[]u8 = null,
     last_signature: ?[]u8 = null,
     last_locations: ?lsp.responses.LocationList = null,
+    last_locations_are_references: bool = false,
     last_symbols: ?lsp.responses.SymbolList = null,
     last_completions: ?lsp.completion.List = null,
     pending_workspace_edit: ?lsp.workspace_edit.Plan = null,
@@ -177,6 +178,7 @@ pub const State = struct {
             .definition, .references => {
                 if (self.last_locations) |*old| old.deinit();
                 self.last_locations = try lsp.responses.parseLocations(self.allocator, body);
+                self.last_locations_are_references = request.kind == .references;
             },
             .document_symbols, .workspace_symbols => {
                 if (self.last_symbols) |*old| old.deinit();
