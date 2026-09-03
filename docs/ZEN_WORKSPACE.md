@@ -89,7 +89,7 @@ v0.5 establishes first-class Context surfaces for Git, Quickfix, and Tests. They
 
 ## Responsive behavior
 
-The shell receives real terminal dimensions from Zig.
+The shell receives real terminal dimensions from Zig. After the Hondo bundle is installed, Zig calls the shell's resize entrypoint directly on initial layout and whenever the terminal size changes.
 
 - Below 108 columns, Context collapses to a focusable `C` rail.
 - Below 72 columns, Project also collapses to a focusable `P` rail.
