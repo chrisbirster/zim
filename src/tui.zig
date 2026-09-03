@@ -46,9 +46,8 @@ const TuiApp = struct {
 
         try runtime.eval(ui_bundle, "zim-hondo-ui.js");
         errdefer runtime.eval("globalThis.__zimUiDispose?.();", "zim-hondo-ui-dispose.js") catch {};
-        try updateUiSize(&runtime, width, height);
         try registry.sync(scene);
-        try hondo.native_view_runtime.flushNotifications(&runtime, &registry);
+        try notifyWorkspaceSize(&runtime, &registry, scene, width, height);
 
         var renderer = try hondo.terminal.renderer.Renderer.init(allocator, width, height);
         errdefer renderer.deinit();
@@ -161,7 +160,7 @@ const TuiApp = struct {
 
     fn resize(self: *TuiApp, width: usize, height: usize) !bool {
         const changed = try self.renderer.resize(width, height);
-        if (changed) try updateUiSize(&self.runtime, width, height);
+        if (changed) try notifyWorkspaceSize(&self.runtime, &self.registry, self.scene, width, height);
         return changed;
     }
 
@@ -173,14 +172,30 @@ const TuiApp = struct {
     }
 };
 
-fn updateUiSize(runtime: *hondo.runtime.Runtime, width: usize, height: usize) !void {
-    var buffer: [160]u8 = undefined;
-    const script = try std.fmt.bufPrint(
-        &buffer,
-        "globalThis.__zimUiResize({d}, {d})",
+fn notifyWorkspaceSize(
+    runtime: *hondo.runtime.Runtime,
+    registry: *hondo.native_view.Registry,
+    scene: *hondo.scene.Scene,
+    width: usize,
+    height: usize,
+) !void {
+    var payload_buffer: [128]u8 = undefined;
+    const payload = try std.fmt.bufPrint(
+        &payload_buffer,
+        "{{\"terminalWidth\":{d},\"terminalHeight\":{d}}}",
         .{ width, height },
     );
-    try runtime.eval(script, "zim-ui-resize.js");
+
+    for (scene.nodes.items) |maybe_node| {
+        const node = maybe_node orelse continue;
+        if (node.id == 0 or !registry.isNative(node.id)) continue;
+        const native_type = (try hondo.native_view.nativeType(scene, node.id)) orelse continue;
+        if (!std.mem.eql(u8, native_type, editor_view.native_type)) continue;
+        const context = hondo.native_view.Context{ .registry = registry, .node_id = node.id };
+        try context.notify(payload);
+        break;
+    }
+    try hondo.native_view_runtime.flushNotifications(runtime, registry);
 }
 
 pub fn run(init: std.process.Init, editor: *editor_module.Editor, api: *api_module.Api) !u8 {

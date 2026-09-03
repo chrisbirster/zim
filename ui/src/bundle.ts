@@ -48,7 +48,6 @@ let contextRef: HondoRefHandle | undefined;
 
 type ZimGlobals = typeof globalThis & {
   __zimUiDispose?: () => void;
-  __zimUiResize?: (width: number, height: number) => void;
   __zimJsKeyEvents?: number;
 };
 
@@ -131,6 +130,8 @@ function onNativeState(event: HondoNodeEvent): void {
   if (typeof value.diagnostics === 'number') setDiagnostics(value.diagnostics);
   if (typeof value.symbols === 'number') setSymbols(value.symbols);
   if (typeof value.references === 'number') setReferences(value.references);
+  if (typeof value.terminalWidth === 'number') setTerminalWidth(value.terminalWidth);
+  if (typeof value.terminalHeight === 'number') setTerminalHeight(value.terminalHeight);
   flush();
 }
 
@@ -333,12 +334,6 @@ const disposeRender = render(() =>
   host.root,
 );
 flush();
-
-globals.__zimUiResize = (width, height) => {
-  setTerminalWidth(Math.max(1, Math.trunc(width)));
-  setTerminalHeight(Math.max(1, Math.trunc(height)));
-  flush();
-};
 
 globals.__zimUiDispose = () => {
   projectRef = undefined;
