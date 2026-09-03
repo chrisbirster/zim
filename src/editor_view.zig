@@ -48,11 +48,11 @@ fn create(
     context: hondo.native_view.Context,
     props_json: []const u8,
 ) !?*anyopaque {
-    _ = context;
     _ = props_json;
     const editor = bound_editor orelse return BindError.NoBoundEditor;
     const state = try allocator.create(State);
     state.* = .{ .editor = editor };
+    try publishState(state, context);
     return state;
 }
 
@@ -488,11 +488,19 @@ fn publishState(state: *State, context: hondo.native_view.Context) !void {
     const safe_status = escapeJson(state.editor.status(), &status_escaped);
     var path_escaped: [512]u8 = undefined;
     const safe_path = escapeJson(state.editor.currentPath() orelse "[No Name]", &path_escaped);
+    var project_escaped: [512]u8 = undefined;
+    const safe_project = escapeJson(state.editor.project_root orelse "", &project_escaped);
+    const diagnostics = diagnosticCount(state.editor);
+    const symbols = if (state.editor.lsp_state.last_symbols) |value| value.items.len else 0;
+    const references = if (state.editor.lsp_state.last_locations_are_references)
+        if (state.editor.lsp_state.last_locations) |value| value.items.len else 0
+    else
+        0;
 
-    var payload_buffer: [1536]u8 = undefined;
+    var payload_buffer: [2304]u8 = undefined;
     const payload = try std.fmt.bufPrint(
         &payload_buffer,
-        "{{\"mode\":\"{s}\",\"line\":{d},\"column\":{d},\"modified\":{},\"revision\":{d},\"commandOpen\":{},\"commandText\":\"{s}\",\"status\":\"{s}\",\"path\":\"{s}\",\"buffers\":{d},\"windows\":{d},\"tabs\":{d}}}",
+        "{{\"mode\":\"{s}\",\"line\":{d},\"column\":{d},\"modified\":{},\"revision\":{d},\"commandOpen\":{},\"commandText\":\"{s}\",\"status\":\"{s}\",\"path\":\"{s}\",\"project\":\"{s}\",\"buffers\":{d},\"windows\":{d},\"tabs\":{d},\"diagnostics\":{d},\"symbols\":{d},\"references\":{d}}}",
         .{
             state.editor.modeName(),
             position.line,
@@ -503,14 +511,23 @@ fn publishState(state: *State, context: hondo.native_view.Context) !void {
             safe_command,
             safe_status,
             safe_path,
+            safe_project,
             state.editor.buffers.items.len,
             state.editor.activeTab().window_ids.items.len,
             state.editor.tabs.items.len,
+            diagnostics,
+            symbols,
+            references,
         },
     );
     try context.notify(payload);
 }
 
+fn diagnosticCount(editor: *const editor_module.Editor) usize {
+    var total: usize = 0;
+    for (editor.lsp_state.diagnostics.entries.items) |entry| total += entry.items.items.len;
+    return total;
+}
 fn escapeJson(source: []const u8, output: []u8) []const u8 {
     var index: usize = 0;
     for (source) |byte| {

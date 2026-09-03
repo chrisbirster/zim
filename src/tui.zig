@@ -46,7 +46,9 @@ const TuiApp = struct {
 
         try runtime.eval(ui_bundle, "zim-hondo-ui.js");
         errdefer runtime.eval("globalThis.__zimUiDispose?.();", "zim-hondo-ui-dispose.js") catch {};
+        try updateUiSize(&runtime, width, height);
         try registry.sync(scene);
+        try hondo.native_view_runtime.flushNotifications(&runtime, &registry);
 
         var renderer = try hondo.terminal.renderer.Renderer.init(allocator, width, height);
         errdefer renderer.deinit();
@@ -158,7 +160,9 @@ const TuiApp = struct {
     }
 
     fn resize(self: *TuiApp, width: usize, height: usize) !bool {
-        return self.renderer.resize(width, height);
+        const changed = try self.renderer.resize(width, height);
+        if (changed) try updateUiSize(&self.runtime, width, height);
+        return changed;
     }
 
     fn writeFrame(self: *TuiApp) !void {
@@ -168,6 +172,16 @@ const TuiApp = struct {
         if (bytes.len != 0) try terminal_io.writeAll(terminal_io.stdout_fd, bytes);
     }
 };
+
+fn updateUiSize(runtime: *hondo.runtime.Runtime, width: usize, height: usize) !void {
+    var buffer: [160]u8 = undefined;
+    const script = try std.fmt.bufPrint(
+        &buffer,
+        "globalThis.__zimUiResize?.({d}, {d});",
+        .{ width, height },
+    );
+    try runtime.eval(script, "zim-ui-resize.js");
+}
 
 pub fn run(init: std.process.Init, editor: *editor_module.Editor, api: *api_module.Api) !u8 {
     var session = try hondo.terminal.session.Session.begin(
@@ -309,6 +323,61 @@ test "Hondo chrome reacts while the expanded editor grammar stays native" {
     try std.testing.expectEqual(editor_module.Mode.normal, editor.mode);
     const native_again = try app.dispatch(.{ .key = .{ .codepoint = 'i' } });
     try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, native_again.path);
+}
+
+test "Zen workspace focus traverses chrome while insert Tab stays native" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 120, 30);
+    defer app.deinit();
+
+    try std.testing.expect(sceneContainsText(app.scene, "ZEN · EDITOR"));
+    const before = editor.text().len;
+
+    const context = try app.dispatch(.{ .key = .tab });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.javascript, context.path);
+    try std.testing.expect(sceneContainsText(app.scene, "ZEN · CONTEXT"));
+    try std.testing.expectEqual(before, editor.text().len);
+
+    const project = try app.dispatch(.{ .key = .tab });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.javascript, project.path);
+    try std.testing.expect(sceneContainsText(app.scene, "ZEN · PROJECT"));
+
+    _ = try app.dispatch(.{ .key = .tab });
+    try std.testing.expect(sceneContainsText(app.scene, "ZEN · EDITOR"));
+    _ = try app.dispatch(.{ .key = .{ .codepoint = 'i' } });
+    const insert_tab = try app.dispatch(.{ .key = .tab });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, insert_tab.path);
+    try std.testing.expectEqualStrings("  ", editor.text());
+    try std.testing.expect(sceneContainsText(app.scene, "ZEN · EDITOR"));
+}
+
+test "Zen workspace side zones collapse and respond to terminal width" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 120, 30);
+    defer app.deinit();
+
+    try std.testing.expect(sceneContainsText(app.scene, "PROJECT"));
+    try std.testing.expect(sceneContainsText(app.scene, "Symbols"));
+
+    _ = try app.dispatch(.{ .key = .tab });
+    const collapsed = try app.dispatch(.{ .key = .{ .codepoint = 'c' } });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.javascript, collapsed.path);
+    try std.testing.expect(sceneContainsText(app.scene, " C "));
+    try std.testing.expect(!sceneContainsText(app.scene, "Symbols"));
+
+    _ = try app.dispatch(.{ .key = .{ .codepoint = 'c' } });
+    try std.testing.expect(sceneContainsText(app.scene, "Symbols"));
+
+    try std.testing.expect(try app.resize(70, 24));
+    try app.render();
+    try std.testing.expect(sceneContainsText(app.scene, " P "));
+    try std.testing.expect(sceneContainsText(app.scene, " C "));
 }
 
 test "Hondo status reflects native split commands" {
