@@ -16,6 +16,7 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - run: sed -i 's/LocationList = null;/LocationList = null,/g' scripts/v05_native_patch.py
       - run: python3 scripts/v05_native_patch.py
       - run: zig fmt src/editor_view.zig src/tui.zig src/lsp_bridge.zig src/app.zig src/plugin_manager.zig src/lua_runtime.zig build.zig.zon
       - run: |
