@@ -89,7 +89,7 @@ v0.5 establishes first-class Context surfaces for Git, Quickfix, and Tests. They
 
 ## Responsive behavior
 
-The shell receives real terminal dimensions from Zig. After the Hondo bundle is installed, Zig calls the shell's resize entrypoint directly on initial layout and whenever the terminal size changes.
+The shell receives real terminal dimensions from Zig through the same `nativeState` notification channel used for coarse editor state. Initial terminal width/height are published after the `EditorView` instance is registered, and later terminal resizes queue another native notification; no resize path generates or evaluates JavaScript source dynamically.
 
 - Below 108 columns, Context collapses to a focusable `C` rail.
 - Below 72 columns, Project also collapses to a focusable `P` rail.
@@ -112,6 +112,7 @@ buffer/window/tab counts
 diagnostic count
 symbol count
 reference count
+terminal width/height
 ```
 
 The shell does not receive buffer text, cursor editing commands, or per-keystroke editing semantics.
@@ -122,7 +123,7 @@ The v0.5 integration suite verifies that:
 
 - Project → Editor → Context focus traversal works through Hondo.
 - collapsing a side zone replaces it with a focusable rail.
-- terminal resize drives responsive rail behavior.
+- terminal resize drives responsive rail behavior through native-state notifications.
 - normal-mode workspace `Tab` does not mutate editor text.
 - insert-mode `Tab` is still handled by the native editor path.
 - existing handled editor-key tests continue to prove that ordinary editing does not cross JavaScript.
