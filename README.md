@@ -48,29 +48,52 @@ Lua is the primary configuration and in-process plugin language. External plugin
 
 ## Current status
 
-Zim is a real modal editor under active pre-1.0 development. The current development version is **`v0.4.0 — Plugin System + Package Management`**.
+Zim is a real modal editor under active pre-1.0 development. The current development version is **`v0.5.0 — Zen Workspace`**.
 
-`v0.4.0` builds on the programmable Zig API and v0.3 Lua layer with:
+`v0.5.0` builds on the programmable core, Lua configuration, and built-in plugin system with:
 
-- deterministic in-process Lua plugin discovery and startup
-- built-in Git-backed plugin install/update/remove
-- an exact-commit `plugins.lock`
-- plugin compatibility metadata through `zim-plugin.meta`
-- API-generation, Zim-version, and capability checks
-- failure isolation so one broken plugin does not block later plugins
-- rollback of partial command/keymap/autocommand registrations when plugin startup fails
-- Lua module search paths for plugin `require(...)`
-- `:PackAdd`, `:PackUpdate`, `:PackRemove`, and `:PackList`
-- `:Commands` and `:Keymaps` discovery
-- a real Git-backed package lifecycle test that installs, restarts/loads, updates, verifies exact SHAs, and removes a plugin
+- a centered editor zone with comfortable breathing space on wide terminals
+- a first-class Project zone on the left
+- a first-class Context zone on the right
+- Hondo-native workspace focus traversal between Project, Editor, and Context
+- collapsible Project and Context rails that remain keyboard-focusable
+- responsive side-rail behavior for narrow terminals
+- Context surfaces for Symbols, Diagnostics, References, Git, Quickfix, and Tests
+- coarse native project/LSP summary state without sending buffer text or editing semantics through JavaScript
+- live diagnostic, symbol, and reference result counts
+- explicit tracking that distinguishes reference results from definition locations
+- integration coverage proving Normal-mode workspace Tab traversal while Insert-mode Tab remains a native editor key
+- the existing direct native EditorView keystroke/render path
 - real pinned ZLS 0.16.0 subprocess smoke testing
 - Ubuntu, macOS, and Windows CI
 
 ```text
-ZIM 0.4.0 — YOUR NEW CODE OVERLORD
+ZIM 0.5.0 — YOUR NEW CODE OVERLORD
 ```
 
-See [Plugins](docs/PLUGINS.md) for package management and plugin authoring, and [Lua Configuration](docs/LUA_CONFIGURATION.md) for the public Lua editor API.
+See [Zen Workspace](docs/ZEN_WORKSPACE.md) for the workspace model, keyboard behavior, responsive layout, and native-state boundary.
+
+## Zen Workspace
+
+At normal terminal widths, Zim is organized as:
+
+```text
+┌──────────────┬──────────────────────────────┬──────────────────┐
+│ PROJECT      │                              │ CONTEXT          │
+│ project root │          EditorView          │ Symbols          │
+│ current file │           Zig-native         │ Diagnostics      │
+│ buffers      │                              │ References       │
+│              │                              │ Git / QF / Tests │
+└──────────────┴──────────────────────────────┴──────────────────┘
+```
+
+Project and Context are Hondo application chrome, not fake editor buffers. The center remains the single native `zim.editor` view.
+
+In Normal mode, `Tab`/`Shift-Tab` traverse workspace focus. When a key belongs to editing, native editor ownership wins: for example, Insert-mode `Tab` inserts indentation instead of moving focus.
+
+While a side zone is focused, `c` or `Enter` toggles its collapsed rail. Context uses Left/Right to select a surface. On narrow terminals Context and then Project collapse automatically to small focusable rails instead of disappearing.
+
+The Git, Quickfix, and Tests entries are provider-neutral Context slots in v0.5. They establish the workspace contract without running subprocess-backed tooling on every paint/state update; later job/tooling work can feed them through the same coarse-state boundary.
 
 ## Plugin package management
 
@@ -97,7 +120,9 @@ Update, list, or remove plugins:
 
 Package mutations are applied on disk immediately and the resulting exact Git commit is recorded in `plugins.lock`. Restart Zim to load newly installed/updated code or unload removed code.
 
-Plugins are trusted in-process Lua code. Zim v0.4 does not claim Neovim API/plugin compatibility.
+Plugins are trusted in-process Lua code. Zim does not claim Neovim API/plugin compatibility.
+
+See [Plugins](docs/PLUGINS.md) for package management and plugin authoring, and [Lua Configuration](docs/LUA_CONFIGURATION.md) for the public Lua editor API.
 
 ## Extension architecture
 
@@ -200,10 +225,11 @@ zig fmt src build.zig
 zig build test
 ```
 
-CI additionally runs the pure Zig core gate, the real Git-backed plugin package lifecycle test, Hondo integration tests, the full suite, and the pinned real-ZLS smoke where configured.
+CI additionally runs the pure Zig core gate, the real Git-backed plugin package lifecycle test, Hondo integration tests including the Zen workspace focus/native-key contract, the full suite, and the pinned real-ZLS smoke where configured.
 
 ## Read next
 
+- [Zen Workspace](docs/ZEN_WORKSPACE.md)
 - [Plugins](docs/PLUGINS.md)
 - [Lua Configuration](docs/LUA_CONFIGURATION.md)
 - [Vision and product principles](docs/VISION.md)
@@ -211,3 +237,4 @@ CI additionally runs the pure Zig core gate, the real Git-backed plugin package 
 - [Programmable Core](docs/PROGRAMMABLE_CORE.md)
 - [Roadmap](ROADMAP.md)
 - [ADR 0003: Terminal-only product architecture](docs/architecture/0003-terminal-only-product.md)
+- [ADR 0004: Hondo application shell](docs/architecture/0004-hondo-application-shell.md)
