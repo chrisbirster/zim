@@ -55,7 +55,9 @@ jobs:
           try context.notify(payload);'''
           p.write_text(text[:start] + replacement + text[end:])
           PY
-      - run: sed -i 's/statFile(self.io, resolved)/statFile(self.io, resolved, .{})/' src/editor.zig
+      - run: |
+          sed -i '/var command_escaped:/d; /const safe_command =/d; /var status_escaped:/d; /const safe_status =/d; /var path_escaped:/d; /const safe_path =/d; /var project_escaped:/d; /const safe_project =/d' src/editor_view.zig
+          sed -i 's/statFile(self.io, resolved)/statFile(self.io, resolved, .{})/' src/editor.zig
       - run: zig fmt src build.zig
       - run: npm install --no-audit --no-fund
       - run: npm run build:ui
