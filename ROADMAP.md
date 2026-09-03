@@ -130,13 +130,29 @@ Validation evidence: squash-merged main commit `cbc41cf9fde6065ffe078080aabd63db
 
 ## v0.6.0 — Pins
 
+**Status: implementation complete; validation pending.**
+
 **Goal:** make project navigation fast and persistent.
 
-- [ ] add/remove/reorder pins
-- [ ] direct jumps 1–9
-- [ ] centered pin switcher
-- [ ] project/session persistence
-- [ ] public Pins API and Lua bindings
+- [x] stable ordered native Pins model with persistent IDs
+- [x] persist project-relative file path, line, column, and optional label
+- [x] add/remove/reorder/list/jump operations
+- [x] project/session persistence with restart restore and missing-target tolerance
+- [x] linewise direct jumps with `'1` through `'9`
+- [x] exact line/column direct jumps with backtick + `1` through `9`
+- [x] `:PinAdd`, `:PinRemove`, `:PinMove`, `:PinJump`, and `:PinList`
+- [x] centered Hondo pin switcher
+- [x] Project-zone summary for the first nine Pins
+- [x] public Zig Pins API
+- [x] Lua `zim.pin` bindings and plugin `pins` capability
+- [x] persistence/model/Lua API tests
+- [x] Hondo integration coverage proving handled Pin navigation remains native
+- [x] coherent 0.6.0 executable/Lua/plugin/build versioning
+- [x] user-facing Pins documentation
+- [ ] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
+- [ ] exact merged-main CI green
+
+**Exit condition:** Pins survive restart, are reorderable and scriptable, support fast direct jumps 1–9, and are visible/selectable from the Zen Workspace without weakening the native editor hot path.
 
 ## v0.7.0 — Extmarks + Plugin UI Primitives
 
