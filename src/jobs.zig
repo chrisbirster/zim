@@ -147,7 +147,7 @@ fn readCapture(io: std.Io, file: std.Io.File, storage: []u8) !Capture {
             error.EndOfStream => break,
             else => return err,
         };
-        if (n == 0) continue;
+        if (n == 0) break;
 
         const remaining = storage.len - capture.len;
         const accepted = @min(remaining, n);
