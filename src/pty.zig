@@ -14,6 +14,8 @@ const c = if (is_windows) @cImport({
     @cInclude("unistd.h");
 });
 
+var windows_pipe_counter = std.atomic.Value(u64).init(1);
+
 const Native = if (is_windows) struct {
     process: c.HANDLE,
     input_write: c.HANDLE,
@@ -219,6 +221,55 @@ pub const Session = struct {
     }
 };
 
+const WindowsOutputPipe = struct {
+    read: c.HANDLE,
+    write: c.HANDLE,
+};
+
+fn createWindowsOutputPipe(allocator: std.mem.Allocator) !WindowsOutputPipe {
+    const sequence = windows_pipe_counter.fetchAdd(1, .monotonic);
+    const name_utf8 = try std.fmt.allocPrint(
+        allocator,
+        "\\\\.\\pipe\\zim-conpty-{d}-{d}",
+        .{ c.GetCurrentProcessId(), sequence },
+    );
+    defer allocator.free(name_utf8);
+    const name = try std.unicode.utf8ToUtf16LeAllocZ(allocator, name_utf8);
+    defer allocator.free(name);
+
+    const read_handle = c.CreateNamedPipeW(
+        name.ptr,
+        c.PIPE_ACCESS_INBOUND,
+        c.PIPE_TYPE_BYTE | c.PIPE_READMODE_BYTE | c.PIPE_NOWAIT,
+        1,
+        4096,
+        4096,
+        0,
+        null,
+    );
+    if (read_handle == c.INVALID_HANDLE_VALUE) return error.PtyPipeFailed;
+    errdefer _ = c.CloseHandle(read_handle);
+
+    const write_handle = c.CreateFileW(
+        name.ptr,
+        c.GENERIC_WRITE,
+        0,
+        null,
+        c.OPEN_EXISTING,
+        0,
+        null,
+    );
+    if (write_handle == c.INVALID_HANDLE_VALUE) return error.PtyPipeFailed;
+    errdefer _ = c.CloseHandle(write_handle);
+
+    if (c.ConnectNamedPipe(read_handle, null) == 0) {
+        const code = c.GetLastError();
+        if (code != c.ERROR_PIPE_CONNECTED) return error.PtyPipeFailed;
+    }
+
+    return .{ .read = read_handle, .write = write_handle };
+}
+
 fn spawnWindows(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -227,32 +278,29 @@ fn spawnWindows(
 ) !Session {
     var input_read: c.HANDLE = null;
     var input_write: c.HANDLE = null;
-    var output_read: c.HANDLE = null;
-    var output_write: c.HANDLE = null;
 
     if (c.CreatePipe(&input_read, &input_write, null, 0) == 0) return error.PtyPipeFailed;
     errdefer {
         _ = c.CloseHandle(input_read);
         _ = c.CloseHandle(input_write);
     }
-    if (c.CreatePipe(&output_read, &output_write, null, 0) == 0) return error.PtyPipeFailed;
+
+    var output = try createWindowsOutputPipe(allocator);
     errdefer {
-        _ = c.CloseHandle(output_read);
-        _ = c.CloseHandle(output_write);
+        _ = c.CloseHandle(output.read);
+        _ = c.CloseHandle(output.write);
     }
-    var output_mode: c.DWORD = c.PIPE_NOWAIT;
-    if (c.SetNamedPipeHandleState(output_read, &output_mode, null, null) == 0) return error.PtyPipeFailed;
 
     var pseudo_console: c.HPCON = undefined;
-    if (c.CreatePseudoConsole(windowsCoord(options.dimensions), input_read, output_write, 0, &pseudo_console) < 0) {
+    if (c.CreatePseudoConsole(windowsCoord(options.dimensions), input_read, output.write, 0, &pseudo_console) < 0) {
         return error.PtySpawnFailed;
     }
     errdefer c.ClosePseudoConsole(pseudo_console);
 
     _ = c.CloseHandle(input_read);
     input_read = null;
-    _ = c.CloseHandle(output_write);
-    output_write = null;
+    _ = c.CloseHandle(output.write);
+    output.write = null;
 
     var attribute_size: c.SIZE_T = 0;
     _ = c.InitializeProcThreadAttributeList(null, 1, 0, &attribute_size);
@@ -300,7 +348,7 @@ fn spawnWindows(
         .native = .{
             .process = process_info.hProcess,
             .input_write = input_write,
-            .output_read = output_read,
+            .output_read = output.read,
             .pseudo_console = pseudo_console,
         },
     };
