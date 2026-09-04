@@ -407,16 +407,16 @@ test "PTY runs a child with terminal semantics" {
     var session = try Session.spawn(std.testing.allocator, std.testing.io, &.{ "zig", "version" }, .{ .dimensions = .{ .columns = 100, .rows = 30 } });
     defer session.deinit();
     try session.resize(.{ .columns = 120, .rows = 40 });
+    try session.wait();
 
     var output: std.ArrayList(u8) = .empty;
     defer output.deinit(std.testing.allocator);
     var buffer: [1024]u8 = undefined;
     while (true) {
-        const n = try session.read(&buffer);
+        const n = try session.readAvailable(&buffer);
         if (n == 0) break;
         try output.appendSlice(std.testing.allocator, buffer[0..n]);
     }
-    try session.wait();
     try std.testing.expect(std.mem.indexOf(u8, output.items, "0.16") != null);
 }
 
