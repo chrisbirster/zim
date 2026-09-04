@@ -158,7 +158,7 @@ Validation evidence: exact PR head `8491d95e913f18f33d4748d67ae9e0837b69df15` pa
 
 ## v0.7.0 — Extmarks + Plugin UI Primitives
 
-**Status: implementation complete; final release validation pending.**
+**Status: complete.**
 
 **Goal:** give plugins and language tooling durable annotation/UI primitives without moving editor semantics out of Zig.
 
@@ -184,10 +184,10 @@ Validation evidence: exact PR head `8491d95e913f18f33d4748d67ae9e0837b69df15` pa
 - [x] integration tests proving edit tracking and native UI ownership
 - [x] coherent 0.7.0 executable/Lua/plugin/build versioning
 - [x] user-facing Extmarks/Diagnostics/Plugin UI documentation
-- [ ] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
-- [ ] exact merged-main CI green
+- [x] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
+- [x] exact merged-main CI green
 
-The implementation preflight at clean product head `6a414e981021ccea8dc7dd24a5ff341b4412d092` passed Zig formatting, the Solid/Hondo bundle, the pure core suite, and Hondo integration before release documentation was added.
+Validation evidence: implementation preflight head `6a414e981021ccea8dc7dd24a5ff341b4412d092` passed formatting, the Solid/Hondo bundle, the pure core suite, and Hondo integration. Exact release PR head `b4c346e458a95b3358dc0428721f785340c4cd12` passed CI #169 (run `33828310601`) on Ubuntu, macOS, and Windows; Ubuntu also passed the pinned real-ZLS 0.16.0 smoke. Squash-merged main commit `4bc4faac008d35480017e1b49f6535640f514720` passed CI #170 (run `33828961675`) on Ubuntu, macOS, and Windows; Ubuntu again passed the real-ZLS smoke.
 
 **Exit condition:** a Lua plugin can create a namespace, place durable annotations that track edits, render highlights/signs/virtual text, publish diagnostics, and drive a native popup/completion surface through the public Zim API.
 
