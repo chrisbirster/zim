@@ -1,8 +1,11 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const api_module = @import("api.zig");
 const editor_module = @import("editor.zig");
 const terminal = @import("terminal.zig");
 const terminal_screen = @import("terminal_screen.zig");
+
+const is_windows = builtin.os.tag == .windows;
 
 pub const Controller = struct {
     allocator: std.mem.Allocator,
@@ -81,9 +84,11 @@ pub const Controller = struct {
         }
 
         try self.discardActive();
-        const shell = self.environment.get("SHELL") orelse "/bin/sh";
+        const shell = self.defaultShell();
         const id = if (trimmed.len == 0)
             try self.manager.start(&.{shell}, .{ .dimensions = self.dimensions() })
+        else if (comptime is_windows)
+            try self.manager.start(&.{ shell, "/d", "/s", "/c", trimmed }, .{ .dimensions = self.dimensions() })
         else
             try self.manager.start(&.{ shell, "-lc", trimmed }, .{ .dimensions = self.dimensions() });
         errdefer _ = self.manager.stop(id) catch false;
@@ -178,6 +183,11 @@ pub const Controller = struct {
     fn dimensions(self: *const Controller) @import("pty.zig").Dimensions {
         return .{ .columns = self.columns, .rows = self.rows };
     }
+
+    fn defaultShell(self: *const Controller) []const u8 {
+        if (comptime is_windows) return self.environment.get("COMSPEC") orelse "cmd.exe";
+        return self.environment.get("SHELL") orelse "/bin/sh";
+    }
 };
 
 fn terminalCommand(context: *api_module.commands.Context) !void {
@@ -212,4 +222,19 @@ test "terminal controller registers the public terminal command" {
     defer controller.deinit(&api);
     try controller.register(&api);
     try std.testing.expect(api.commands.find("terminal") != null);
+}
+
+test "terminal shell selection follows the native platform" {
+    var environment = std.process.Environ.Map.init(std.testing.allocator);
+    defer environment.deinit();
+    try environment.put("SHELL", "/test/shell");
+    try environment.put("COMSPEC", "C:\\test\\cmd.exe");
+    var controller = Controller.init(std.testing.allocator, std.testing.io, &environment);
+    defer controller.manager.deinit();
+
+    if (comptime is_windows) {
+        try std.testing.expectEqualStrings("C:\\test\\cmd.exe", controller.defaultShell());
+    } else {
+        try std.testing.expectEqualStrings("/test/shell", controller.defaultShell());
+    }
 }
