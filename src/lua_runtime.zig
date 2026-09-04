@@ -879,9 +879,9 @@ test "Lua jobs share the public asynchronous job service" {
     defer runtime.deinit();
 
     try runtime.eval("lua_job = zim.job.start({'zig', 'version'})");
-    try std.testing.expectEqual(@as(api_module.JobId, 1), @as(api_module.JobId, @intCast(runtime.lua.getGlobal("lua_job") catch unreachable)));
     try api.jobWait(1);
     try runtime.eval(
+        \\assert(lua_job == 1)
         \\assert(zim.job.status(lua_job) == 'completed')
         \\assert(string.find(zim.job.stdout(lua_job), '0.16', 1, true) ~= nil)
         \\assert(zim.job.stderr(lua_job) == '')
@@ -889,5 +889,5 @@ test "Lua jobs share the public asynchronous job service" {
 
     try runtime.eval("cancel_job = zim.job.start({'zig', 'fmt', '--stdin'}, {stdin = 'pipe'})");
     try std.testing.expect(try api.jobStop(2));
-    try runtime.eval("assert(zim.job.status(cancel_job) == 'cancelled')");
+    try runtime.eval("assert(cancel_job == 2); assert(zim.job.status(cancel_job) == 'cancelled')");
 }
