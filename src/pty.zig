@@ -295,7 +295,13 @@ fn spawnWindows(
     if (c.CreatePseudoConsole(windowsCoord(options.dimensions), input_read, output.write, 0, &pseudo_console) < 0) {
         return error.PtySpawnFailed;
     }
-    errdefer c.ClosePseudoConsole(pseudo_console);
+    errdefer {
+        _ = c.CloseHandle(input_write);
+        input_write = null;
+        _ = c.CloseHandle(output.read);
+        output.read = null;
+        c.ClosePseudoConsole(pseudo_console);
+    }
 
     _ = c.CloseHandle(input_read);
     input_read = null;
