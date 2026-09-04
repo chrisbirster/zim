@@ -7,6 +7,7 @@ test {
     _ = @import("extmarks.zig");
     _ = @import("plugin_ui.zig");
     _ = @import("jobs.zig");
+    _ = @import("pty.zig");
     _ = @import("api.zig");
     _ = @import("lua_runtime.zig");
     _ = @import("plugin_manager.zig");
