@@ -143,8 +143,11 @@ fn readCapture(io: std.Io, file: std.Io.File, storage: []u8) !Capture {
     var scratch: [4096]u8 = undefined;
 
     while (true) {
-        const n = try file.readStreaming(io, &.{&scratch});
-        if (n == 0) break;
+        const n = file.readStreaming(io, &.{&scratch}) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
+        if (n == 0) continue;
 
         const remaining = storage.len - capture.len;
         const accepted = @min(remaining, n);
@@ -243,7 +246,6 @@ pub const Manager = struct {
         if (entry.status != .running) return;
 
         const output = entry.future.await(self.io) catch |err| {
-            std.debug.print("zim job {d} worker error: {s}\n", .{ id, @errorName(err) });
             entry.status = if (err == error.Canceled) .cancelled else .failed;
             return err;
         };
