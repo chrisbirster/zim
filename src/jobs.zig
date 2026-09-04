@@ -3,7 +3,7 @@ const std = @import("std");
 pub const JobId = u64;
 pub const Stream = enum { stdout, stderr };
 
-pub const Status = enum {
+pub const Status = enum(u8) {
     running,
     completed,
     cancelled,
