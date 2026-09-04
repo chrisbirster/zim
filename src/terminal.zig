@@ -259,6 +259,17 @@ pub const Manager = struct {
     }
 };
 
+fn pollUntilTerminalExit(manager: *Manager, id: TerminalId) !void {
+    var attempts: usize = 0;
+    while (attempts < 5000) : (attempts += 1) {
+        _ = try manager.poll(id);
+        const snap = manager.snapshot(id) orelse return error.UnknownTerminal;
+        if (snap.status != .running) return;
+        manager.io.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+    return error.TerminalTestTimeout;
+}
+
 test "terminal manager owns PTY lifecycle and output" {
     if (!Manager.supported()) return error.SkipZigTest;
 
@@ -268,7 +279,7 @@ test "terminal manager owns PTY lifecycle and output" {
     const id = try manager.start(&.{ "zig", "version" }, .{ .dimensions = .{ .columns = 100, .rows = 30 } });
     try std.testing.expectEqual(Status.running, manager.snapshot(id).?.status);
     try std.testing.expect(try manager.resize(id, .{ .columns = 120, .rows = 40 }));
-    try manager.wait(id);
+    try pollUntilTerminalExit(&manager, id);
 
     const snap = manager.snapshot(id).?;
     try std.testing.expectEqual(Status.exited, snap.status);
@@ -284,7 +295,7 @@ test "terminal output is bounded" {
     defer manager.deinit();
 
     const id = try manager.start(&.{ "zig", "version" }, .{ .output_limit = 4 });
-    try manager.wait(id);
+    try pollUntilTerminalExit(&manager, id);
     const snap = manager.snapshot(id).?;
     try std.testing.expectEqual(@as(usize, 4), snap.output_len);
     try std.testing.expect(snap.output_truncated);
