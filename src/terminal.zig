@@ -73,23 +73,28 @@ const Entry = struct {
         if (accepted != bytes.len) self.output_truncated = true;
     }
 
-    fn poll(self: *Entry) !bool {
-        if (self.status_value != .running) return false;
-
+    fn drainAvailable(self: *Entry) !bool {
         var changed = false;
         var scratch: [4096]u8 = undefined;
         var drains: usize = 0;
         while (drains < 64) : (drains += 1) {
-            const n = self.session.readAvailable(&scratch) catch |err| {
-                self.status_value = .failed;
-                return err;
-            };
+            const n = try self.session.readAvailable(&scratch);
             if (n == 0) break;
             self.appendOutput(scratch[0..n]);
             changed = true;
         }
+        return changed;
+    }
 
+    fn poll(self: *Entry) !bool {
+        if (self.status_value != .running) return false;
+
+        var changed = self.drainAvailable() catch |err| {
+            self.status_value = .failed;
+            return err;
+        };
         if (try self.session.exited()) {
+            if (try self.drainAvailable()) changed = true;
             self.status_value = .exited;
             changed = true;
         }
@@ -99,16 +104,11 @@ const Entry = struct {
     fn wait(self: *Entry) !void {
         if (self.status_value != .running) return;
 
-        var scratch: [4096]u8 = undefined;
-        while (true) {
-            const n = self.session.read(&scratch) catch |err| {
-                self.status_value = .failed;
-                return err;
-            };
-            if (n == 0) break;
-            self.appendOutput(scratch[0..n]);
-        }
         self.session.wait() catch |err| {
+            self.status_value = .failed;
+            return err;
+        };
+        _ = self.drainAvailable() catch |err| {
             self.status_value = .failed;
             return err;
         };
@@ -132,6 +132,7 @@ const Entry = struct {
         if (self.status_value != .running) return false;
         try self.session.terminate();
         try self.session.wait();
+        _ = try self.drainAvailable();
         self.status_value = .stopped;
         return true;
     }
