@@ -58,6 +58,16 @@ const bootstrap =
     \\function zim.pin.move(from_slot, to_slot) return n.pin_move(from_slot, to_slot) end
     \\function zim.pin.jump(slot) return n.pin_jump(slot) end
     \\function zim.pin.list() return n.pin_list() end
+    \\zim.job = {}
+    \\function zim.job.start(argv, opts)
+    \\  assert(type(argv) == 'table' and #argv > 0, 'argv must be a non-empty array')
+    \\  opts = opts or {}
+    \\  return n.job_start(opts.cwd, opts.output_limit, opts.stdin == 'pipe', table.unpack(argv))
+    \\end
+    \\function zim.job.stop(id) return n.job_stop(id) end
+    \\function zim.job.status(id) return n.job_status(id) end
+    \\function zim.job.stdout(id) return n.job_stdout(id) end
+    \\function zim.job.stderr(id) return n.job_stderr(id) end
     \\zim.extmark = {}
     \\function zim.extmark.namespace(name) return n.namespace_create(name) end
     \\function zim.extmark.namespace_del(namespace) return n.namespace_delete(namespace) end
@@ -174,6 +184,11 @@ pub const Runtime = struct {
             .{ .name = "pin_move", .func = zlua.wrap(nativePinMove) },
             .{ .name = "pin_jump", .func = zlua.wrap(nativePinJump) },
             .{ .name = "pin_list", .func = zlua.wrap(nativePinList) },
+            .{ .name = "job_start", .func = zlua.wrap(nativeJobStart) },
+            .{ .name = "job_stop", .func = zlua.wrap(nativeJobStop) },
+            .{ .name = "job_status", .func = zlua.wrap(nativeJobStatus) },
+            .{ .name = "job_stdout", .func = zlua.wrap(nativeJobStdout) },
+            .{ .name = "job_stderr", .func = zlua.wrap(nativeJobStderr) },
             .{ .name = "namespace_create", .func = zlua.wrap(nativeNamespaceCreate) },
             .{ .name = "namespace_delete", .func = zlua.wrap(nativeNamespaceDelete) },
             .{ .name = "extmark_set", .func = zlua.wrap(nativeExtmarkSet) },
@@ -452,6 +467,61 @@ fn nativePinList(lua: *Lua) i32 {
         }
         lua.setIndexRaw(-2, @intCast(index + 1));
     }
+    return 1;
+}
+
+fn luaJobId(lua: *Lua, index: i32) api_module.JobId {
+    return @intCast(lua.toInteger(index) catch lua.raiseErrorStr("job id must be an integer", .{}));
+}
+
+fn nativeJobStart(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    const top = lua.getTop();
+    if (top < 4) lua.raiseErrorStr("job argv must be a non-empty array", .{});
+
+    var opts: api_module.jobs.Options = .{};
+    opts.cwd = optionalString(lua, 1);
+    if (!lua.isNoneOrNil(2)) {
+        const limit = lua.toInteger(2) catch lua.raiseErrorStr("output_limit must be an integer", .{});
+        if (limit < 0) lua.raiseErrorStr("output_limit must be >= 0", .{});
+        opts.output_limit = @intCast(limit);
+    }
+    if (lua.toBoolean(3)) opts.stdin = .pipe;
+
+    const count: usize = @intCast(top - 3);
+    const argv = runtime.allocator.alloc([]const u8, count) catch lua.raiseErrorStr("out of memory", .{});
+    defer runtime.allocator.free(argv);
+    for (argv, 0..) |*arg, index| arg.* = lua.checkString(@intCast(index + 4));
+
+    const id = runtime.api.jobStart(runtime.editor, argv, opts) catch lua.raiseErrorStr("failed to start job", .{});
+    lua.pushInteger(@intCast(id));
+    return 1;
+}
+
+fn nativeJobStop(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    lua.pushBoolean(runtime.api.jobStop(luaJobId(lua, 1)) catch lua.raiseErrorStr("failed to stop job", .{}));
+    return 1;
+}
+
+fn nativeJobStatus(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    const status = runtime.api.jobStatus(luaJobId(lua, 1)) orelse lua.raiseErrorStr("unknown job", .{});
+    _ = lua.pushString(@tagName(status));
+    return 1;
+}
+
+fn nativeJobStdout(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    const output = runtime.api.jobStdout(luaJobId(lua, 1)) orelse lua.raiseErrorStr("unknown job", .{});
+    _ = lua.pushString(output);
+    return 1;
+}
+
+fn nativeJobStderr(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    const output = runtime.api.jobStderr(luaJobId(lua, 1)) orelse lua.raiseErrorStr("unknown job", .{});
+    _ = lua.pushString(output);
     return 1;
 }
 
@@ -798,4 +868,26 @@ test "Lua extmarks diagnostics and popup bind the public Zig API" {
     try std.testing.expect(editor.popup.open);
     try std.testing.expectEqualStrings("LUA POPUP", editor.popup.title.items);
     try std.testing.expectEqual(@as(usize, 2), editor.popup.items.items.len);
+}
+
+test "Lua jobs share the public asynchronous job service" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &api, &editor);
+    defer runtime.deinit();
+
+    try runtime.eval("lua_job = zim.job.start({'zig', 'version'})");
+    try std.testing.expectEqual(@as(api_module.JobId, 1), @as(api_module.JobId, @intCast(runtime.lua.getGlobal("lua_job") catch unreachable)));
+    try api.jobWait(1);
+    try runtime.eval(
+        \\assert(zim.job.status(lua_job) == 'completed')
+        \\assert(string.find(zim.job.stdout(lua_job), '0.16', 1, true) ~= nil)
+        \\assert(zim.job.stderr(lua_job) == '')
+    );
+
+    try runtime.eval("cancel_job = zim.job.start({'zig', 'fmt', '--stdin'}, {stdin = 'pipe'})");
+    try std.testing.expect(try api.jobStop(2));
+    try runtime.eval("assert(zim.job.status(cancel_job) == 'cancelled')");
 }
