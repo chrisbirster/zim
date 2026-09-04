@@ -242,7 +242,9 @@ pub const Store = struct {
 
     pub fn diagnosticCount(self: *const Store) usize {
         var count: usize = 0;
-        for (self.marks.items) |mark| if (mark.diagnostic_message != null) count += 1;
+        for (self.marks.items) |mark| {
+            if (mark.diagnostic_message != null) count += 1;
+        }
         return count;
     }
 };
