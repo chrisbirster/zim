@@ -399,6 +399,35 @@ extern "c" fn forkpty(
     winp: ?*const if (is_windows) anyopaque else c.struct_winsize,
 ) c_int;
 
+fn collectUntilExit(session: *Session, allocator: std.mem.Allocator, output: *std.ArrayList(u8)) !void {
+    var buffer: [1024]u8 = undefined;
+    var attempts: usize = 0;
+    var idle_after_exit: usize = 0;
+
+    while (attempts < 5000) : (attempts += 1) {
+        var drained = false;
+        var drains: usize = 0;
+        while (drains < 64) : (drains += 1) {
+            const n = try session.readAvailable(&buffer);
+            if (n == 0) break;
+            try output.appendSlice(allocator, buffer[0..n]);
+            drained = true;
+        }
+
+        const done = try session.exited();
+        if (done) {
+            if (drained) {
+                idle_after_exit = 0;
+            } else {
+                idle_after_exit += 1;
+                if (idle_after_exit >= 50) return;
+            }
+        }
+        session.io.sleep(.fromMilliseconds(1), .awake) catch {};
+    }
+    return error.PtyTestTimeout;
+}
+
 test "PTY platform boundary is explicit" {
     try std.testing.expect(Session.supported());
 }
@@ -407,16 +436,10 @@ test "PTY runs a child with terminal semantics" {
     var session = try Session.spawn(std.testing.allocator, std.testing.io, &.{ "zig", "version" }, .{ .dimensions = .{ .columns = 100, .rows = 30 } });
     defer session.deinit();
     try session.resize(.{ .columns = 120, .rows = 40 });
-    try session.wait();
 
     var output: std.ArrayList(u8) = .empty;
     defer output.deinit(std.testing.allocator);
-    var buffer: [1024]u8 = undefined;
-    while (true) {
-        const n = try session.readAvailable(&buffer);
-        if (n == 0) break;
-        try output.appendSlice(std.testing.allocator, buffer[0..n]);
-    }
+    try collectUntilExit(&session, std.testing.allocator, &output);
     try std.testing.expect(std.mem.indexOf(u8, output.items, "0.16") != null);
 }
 
@@ -426,16 +449,7 @@ test "PTY exposes nonblocking output and exit polling" {
 
     var output: std.ArrayList(u8) = .empty;
     defer output.deinit(std.testing.allocator);
-    var buffer: [1024]u8 = undefined;
-
-    const first = try session.readAvailable(&buffer);
-    if (first != 0) try output.appendSlice(std.testing.allocator, buffer[0..first]);
-    try session.wait();
-    while (true) {
-        const n = try session.readAvailable(&buffer);
-        if (n == 0) break;
-        try output.appendSlice(std.testing.allocator, buffer[0..n]);
-    }
+    try collectUntilExit(&session, std.testing.allocator, &output);
 
     try std.testing.expect(try session.exited());
     try std.testing.expect(std.mem.indexOf(u8, output.items, "0.16") != null);
