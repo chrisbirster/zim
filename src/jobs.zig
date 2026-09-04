@@ -3,19 +3,21 @@ const std = @import("std");
 pub const JobId = u64;
 pub const Stream = enum { stdout, stderr };
 
-const JobPoller = @TypeOf(std.Io.poll(undefined, Stream, .{
-    .stdout = undefined,
-    .stderr = undefined,
-}));
-
 pub const Status = enum {
     running,
     completed,
     cancelled,
+    failed,
+};
+
+pub const Input = enum {
+    ignore,
+    pipe,
 };
 
 pub const Options = struct {
-    output_limit: usize = 1024 * 1024,
+    output_limit: usize = 256 * 1024,
+    stdin: Input = .ignore,
 };
 
 pub const Snapshot = struct {
@@ -28,19 +30,34 @@ pub const Snapshot = struct {
     stderr_truncated: bool,
 };
 
+const Capture = struct {
+    len: usize = 0,
+    truncated: bool = false,
+};
+
+const WorkerOutput = struct {
+    term: std.process.Child.Term,
+    stdout: Capture,
+    stderr: Capture,
+};
+
+const WorkerResult = anyerror!WorkerOutput;
+const WorkerFuture = std.Io.Future(WorkerResult);
+
 const Entry = struct {
     id: JobId,
     io: std.Io,
     allocator: std.mem.Allocator,
-    child: ?std.process.Child,
-    poller: JobPoller,
+    child: std.process.Child,
+    future: WorkerFuture,
     status: Status = .running,
     term: ?std.process.Child.Term = null,
-    stdout: std.ArrayList(u8) = .empty,
-    stderr: std.ArrayList(u8) = .empty,
+    stdout_storage: []u8,
+    stderr_storage: []u8,
+    stdout_len: usize = 0,
+    stderr_len: usize = 0,
     stdout_truncated: bool = false,
     stderr_truncated: bool = false,
-    output_limit: usize,
 
     fn spawn(
         allocator: std.mem.Allocator,
@@ -48,102 +65,56 @@ const Entry = struct {
         id: JobId,
         argv: []const []const u8,
         options: Options,
-    ) !Entry {
+    ) !*Entry {
         if (argv.len == 0) return error.EmptyArgv;
 
         var child = try std.process.spawn(io, .{
             .argv = argv,
-            .stdin = .ignore,
+            .stdin = switch (options.stdin) {
+                .ignore => .ignore,
+                .pipe => .pipe,
+            },
             .stdout = .pipe,
             .stderr = .pipe,
         });
         errdefer child.kill(io);
 
-        const stdout_file = child.stdout orelse return error.StdoutUnavailable;
-        const stderr_file = child.stderr orelse return error.StderrUnavailable;
+        const stdout_storage = try allocator.alloc(u8, options.output_limit);
+        errdefer allocator.free(stdout_storage);
+        const stderr_storage = try allocator.alloc(u8, options.output_limit);
+        errdefer allocator.free(stderr_storage);
 
-        return .{
+        const entry = try allocator.create(Entry);
+        errdefer allocator.destroy(entry);
+        entry.* = .{
             .id = id,
             .io = io,
             .allocator = allocator,
             .child = child,
-            .poller = std.Io.poll(allocator, Stream, .{
-                .stdout = stdout_file,
-                .stderr = stderr_file,
-            }),
-            .output_limit = options.output_limit,
+            .future = undefined,
+            .stdout_storage = stdout_storage,
+            .stderr_storage = stderr_storage,
         };
+        entry.future = io.async(runJob, .{entry});
+        return entry;
     }
 
     fn deinit(self: *Entry) void {
-        if (self.child) |child_value| {
-            var child = child_value;
-            child.kill(self.io);
-            self.child = null;
+        if (self.status == .running) {
+            _ = self.future.cancel(self.io) catch {};
         }
-        self.poller.deinit();
-        self.stdout.deinit(self.allocator);
-        self.stderr.deinit(self.allocator);
+        self.allocator.free(self.stdout_storage);
+        self.allocator.free(self.stderr_storage);
         self.* = undefined;
     }
 
-    fn appendBounded(
-        self: *Entry,
-        target: *std.ArrayList(u8),
-        truncated: *bool,
-        bytes: []const u8,
-    ) !void {
-        if (bytes.len == 0) return;
-
-        const used = @min(target.items.len, self.output_limit);
-        const remaining = self.output_limit - used;
-        const accepted = @min(remaining, bytes.len);
-        if (accepted > 0) try target.appendSlice(self.allocator, bytes[0..accepted]);
-        if (accepted != bytes.len) truncated.* = true;
-    }
-
-    fn drain(self: *Entry) !void {
-        const stdout_reader = self.poller.reader(.stdout);
-        const stdout_bytes = stdout_reader.buffered();
-        try self.appendBounded(&self.stdout, &self.stdout_truncated, stdout_bytes);
-        stdout_reader.toss(stdout_bytes.len);
-
-        const stderr_reader = self.poller.reader(.stderr);
-        const stderr_bytes = stderr_reader.buffered();
-        try self.appendBounded(&self.stderr, &self.stderr_truncated, stderr_bytes);
-        stderr_reader.toss(stderr_bytes.len);
-    }
-
-    fn finish(self: *Entry) !void {
-        if (self.status != .running) return;
-        var child = self.child orelse return error.ProcessNotRunning;
-        self.child = null;
-        self.term = try child.wait(self.io);
+    fn install(self: *Entry, output: WorkerOutput) void {
+        self.term = output.term;
+        self.stdout_len = output.stdout.len;
+        self.stderr_len = output.stderr.len;
+        self.stdout_truncated = output.stdout.truncated;
+        self.stderr_truncated = output.stderr.truncated;
         self.status = .completed;
-    }
-
-    fn poll(self: *Entry) !void {
-        if (self.status != .running) return;
-        const keep_polling = try self.poller.pollTimeout(0);
-        try self.drain();
-        if (!keep_polling) try self.finish();
-    }
-
-    fn wait(self: *Entry) !void {
-        while (self.status == .running) {
-            const keep_polling = try self.poller.poll();
-            try self.drain();
-            if (!keep_polling) try self.finish();
-        }
-    }
-
-    fn cancel(self: *Entry) bool {
-        if (self.status != .running) return false;
-        var child = self.child orelse return false;
-        self.child = null;
-        child.kill(self.io);
-        self.status = .cancelled;
-        return true;
     }
 
     fn exitCode(self: *const Entry) ?u8 {
@@ -159,19 +130,70 @@ const Entry = struct {
             .id = self.id,
             .status = self.status,
             .exit_code = self.exitCode(),
-            .stdout_len = self.stdout.items.len,
-            .stderr_len = self.stderr.items.len,
+            .stdout_len = self.stdout_len,
+            .stderr_len = self.stderr_len,
             .stdout_truncated = self.stdout_truncated,
             .stderr_truncated = self.stderr_truncated,
         };
     }
 };
 
+fn readCapture(io: std.Io, file: std.Io.File, storage: []u8) !Capture {
+    var capture: Capture = .{};
+    var scratch: [4096]u8 = undefined;
+
+    while (true) {
+        const n = try file.readStreaming(io, &.{&scratch});
+        if (n == 0) break;
+
+        const remaining = storage.len - capture.len;
+        const accepted = @min(remaining, n);
+        if (accepted > 0) {
+            @memcpy(storage[capture.len..][0..accepted], scratch[0..accepted]);
+            capture.len += accepted;
+        }
+        if (accepted != n) capture.truncated = true;
+    }
+
+    return capture;
+}
+
+fn runJob(entry: *Entry) WorkerResult {
+    errdefer entry.child.kill(entry.io);
+
+    const stdout_file = entry.child.stdout orelse return error.StdoutUnavailable;
+    const stderr_file = entry.child.stderr orelse return error.StderrUnavailable;
+
+    var stdout_future = entry.io.async(readCapture, .{
+        entry.io,
+        stdout_file,
+        entry.stdout_storage,
+    });
+    defer _ = stdout_future.cancel(entry.io) catch {};
+
+    var stderr_future = entry.io.async(readCapture, .{
+        entry.io,
+        stderr_file,
+        entry.stderr_storage,
+    });
+    defer _ = stderr_future.cancel(entry.io) catch {};
+
+    const stdout_capture = try stdout_future.await(entry.io);
+    const stderr_capture = try stderr_future.await(entry.io);
+    const term = try entry.child.wait(entry.io);
+
+    return .{
+        .term = term,
+        .stdout = stdout_capture,
+        .stderr = stderr_capture,
+    };
+}
+
 pub const Manager = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     next_id: JobId = 1,
-    entries: std.ArrayList(Entry) = .empty,
+    entries: std.ArrayList(*Entry) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Manager {
         return .{
@@ -181,20 +203,23 @@ pub const Manager = struct {
     }
 
     pub fn deinit(self: *Manager) void {
-        for (self.entries.items) |*entry| entry.deinit();
+        for (self.entries.items) |entry| {
+            entry.deinit();
+            self.allocator.destroy(entry);
+        }
         self.entries.deinit(self.allocator);
         self.* = undefined;
     }
 
     fn find(self: *Manager, id: JobId) ?*Entry {
-        for (self.entries.items) |*entry| {
+        for (self.entries.items) |entry| {
             if (entry.id == id) return entry;
         }
         return null;
     }
 
     fn findConst(self: *const Manager, id: JobId) ?*const Entry {
-        for (self.entries.items) |*entry| {
+        for (self.entries.items) |entry| {
             if (entry.id == id) return entry;
         }
         return null;
@@ -204,35 +229,41 @@ pub const Manager = struct {
         const id = self.next_id;
         self.next_id += 1;
 
-        var entry = try Entry.spawn(self.allocator, self.io, id, argv, options);
-        errdefer entry.deinit();
+        const entry = try Entry.spawn(self.allocator, self.io, id, argv, options);
+        errdefer {
+            entry.deinit();
+            self.allocator.destroy(entry);
+        }
         try self.entries.append(self.allocator, entry);
         return id;
     }
 
-    pub fn poll(self: *Manager, id: JobId) !bool {
-        const entry = self.find(id) orelse return error.UnknownJob;
-        try entry.poll();
-        return entry.status == .running;
-    }
-
-    pub fn pollAll(self: *Manager) !usize {
-        var running: usize = 0;
-        for (self.entries.items) |*entry| {
-            try entry.poll();
-            if (entry.status == .running) running += 1;
-        }
-        return running;
-    }
-
     pub fn wait(self: *Manager, id: JobId) !void {
         const entry = self.find(id) orelse return error.UnknownJob;
-        try entry.wait();
+        if (entry.status != .running) return;
+
+        const output = entry.future.await(self.io) catch |err| {
+            entry.status = if (err == error.Canceled) .cancelled else .failed;
+            return err;
+        };
+        entry.install(output);
     }
 
     pub fn cancel(self: *Manager, id: JobId) !bool {
         const entry = self.find(id) orelse return error.UnknownJob;
-        return entry.cancel();
+        if (entry.status != .running) return false;
+
+        if (entry.future.cancel(self.io)) |output| {
+            entry.install(output);
+            return false;
+        } else |err| {
+            if (err == error.Canceled) {
+                entry.status = .cancelled;
+                return true;
+            }
+            entry.status = .failed;
+            return err;
+        }
     }
 
     pub fn status(self: *const Manager, id: JobId) ?Status {
@@ -247,12 +278,12 @@ pub const Manager = struct {
 
     pub fn stdout(self: *const Manager, id: JobId) ?[]const u8 {
         const entry = self.findConst(id) orelse return null;
-        return entry.stdout.items;
+        return entry.stdout_storage[0..entry.stdout_len];
     }
 
     pub fn stderr(self: *const Manager, id: JobId) ?[]const u8 {
         const entry = self.findConst(id) orelse return null;
-        return entry.stderr.items;
+        return entry.stderr_storage[0..entry.stderr_len];
     }
 
     pub fn count(self: *const Manager) usize {
@@ -301,11 +332,11 @@ test "job output is bounded and reports truncation" {
     try std.testing.expect(snap.stderr_truncated);
 }
 
-test "job cancellation is stable and idempotent" {
+test "job cancellation interrupts a running child" {
     var manager = Manager.init(std.testing.allocator, std.testing.io);
     defer manager.deinit();
 
-    const id = try manager.start(&.{ "zig", "version" }, .{});
+    const id = try manager.start(&.{ "zig", "fmt", "--stdin" }, .{ .stdin = .pipe });
     try std.testing.expect(try manager.cancel(id));
     try std.testing.expectEqual(Status.cancelled, manager.status(id).?);
     try std.testing.expect(!(try manager.cancel(id)));
