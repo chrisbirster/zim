@@ -243,6 +243,7 @@ pub const Manager = struct {
         if (entry.status != .running) return;
 
         const output = entry.future.await(self.io) catch |err| {
+            std.debug.print("zim job {d} worker error: {s}\n", .{ id, @errorName(err) });
             entry.status = if (err == error.Canceled) .cancelled else .failed;
             return err;
         };
