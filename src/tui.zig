@@ -5,6 +5,7 @@ const api_observer = @import("api/observer.zig");
 const editor_module = @import("editor.zig");
 const editor_view = @import("editor_view.zig");
 const lua_runtime = @import("lua_runtime.zig");
+const terminal_controller = @import("terminal_controller.zig");
 const terminal_io = @import("terminal_io.zig");
 
 const ui_bundle = @embedFile("generated/zim_ui.js");
@@ -17,6 +18,7 @@ const TuiApp = struct {
     allocator: std.mem.Allocator,
     editor: *editor_module.Editor,
     api: *api_module.Api,
+    terminal: ?*terminal_controller.Controller = null,
     scene: *hondo.scene.Scene,
     runtime: hondo.runtime.Runtime,
     renderer: hondo.terminal.renderer.Renderer,
@@ -66,6 +68,12 @@ const TuiApp = struct {
         return app;
     }
 
+    fn attachTerminal(self: *TuiApp, terminal: *terminal_controller.Controller) !void {
+        self.terminal = terminal;
+        const grid = self.renderer.grid();
+        _ = try terminal.resize(grid.width, terminalContentHeight(grid.height));
+    }
+
     fn deinit(self: *TuiApp) void {
         if (self.focus.clear()) |change| {
             hondo.input_events.dispatchFocusChange(&self.runtime, change) catch {};
@@ -102,6 +110,33 @@ const TuiApp = struct {
         );
         try api_observer.emitChanges(self.api, self.editor, before);
         return result;
+    }
+
+    fn dispatchTerminal(self: *TuiApp, event: hondo.terminal.input.Event) !bool {
+        const terminal = self.terminal orelse return false;
+        if (!terminal.isVisible()) return false;
+
+        switch (event) {
+            .key => |key| switch (key) {
+                .escape => terminal.hide(),
+                .ctrl_c => terminal.input("\x03") catch {},
+                .enter => terminal.input("\r") catch {},
+                .backspace => terminal.input("\x7f") catch {},
+                .tab => terminal.input("\t") catch {},
+                .shift_tab => terminal.input("\x1b[Z") catch {},
+                .up => terminal.input("\x1b[A") catch {},
+                .down => terminal.input("\x1b[B") catch {},
+                .right => terminal.input("\x1b[C") catch {},
+                .left => terminal.input("\x1b[D") catch {},
+                .codepoint => |cp| {
+                    var encoded: [4]u8 = undefined;
+                    const len = std.unicode.utf8Encode(cp, &encoded) catch 0;
+                    if (len != 0) terminal.input(encoded[0..len]) catch {};
+                },
+            },
+            .mouse, .focus => {},
+        }
+        return true;
     }
 
     fn prepareEvent(self: *TuiApp, incoming: hondo.terminal.input.Event) !hondo.terminal.input.Event {
@@ -156,11 +191,58 @@ const TuiApp = struct {
 
     fn render(self: *TuiApp) !void {
         try hondo.native_view_renderer.render(self.scene, &self.registry, self.renderer.grid());
+        try self.paintTerminal();
+    }
+
+    fn paintTerminal(self: *TuiApp) !void {
+        const terminal = self.terminal orelse return;
+        const screen = terminal.screen() orelse return;
+        const grid = self.renderer.grid();
+        if (grid.width == 0 or grid.height == 0) return;
+
+        for (0..grid.height) |y| {
+            for (0..grid.width) |x| try grid.setStyled(x, y, ' ', .{});
+        }
+
+        const content_height = @min(screen.rows, terminalContentHeight(grid.height));
+        const content_width = @min(screen.columns, grid.width);
+        for (0..content_height) |y| {
+            for (0..content_width) |x| {
+                try grid.setStyled(x, y, screen.cell(y, x) orelse ' ', .{});
+            }
+        }
+
+        const status_y = grid.height - 1;
+        var status_buffer: [160]u8 = undefined;
+        const status = if (terminal.snapshot()) |snapshot|
+            std.fmt.bufPrint(
+                &status_buffer,
+                " TERMINAL #{d} {s} · Esc editor · Ctrl-C interrupt ",
+                .{ snapshot.id, @tagName(snapshot.status) },
+            ) catch " TERMINAL · Esc editor · Ctrl-C interrupt "
+        else
+            " TERMINAL · Esc editor · Ctrl-C interrupt ";
+        try grid.paintUtf8Styled(0, status_y, status, grid.width, .{ .attributes = .{ .dim = true } });
+
+        if (screen.cursor_y < content_height and screen.cursor_x < content_width) {
+            if (grid.get(screen.cursor_x, screen.cursor_y)) |cell| {
+                if (cell.kind == .lead) {
+                    var style = cell.style;
+                    style.attributes.reverse = true;
+                    try grid.setGraphemeStyled(screen.cursor_x, screen.cursor_y, cell.grapheme, cell.width, style);
+                } else {
+                    try grid.setStyled(screen.cursor_x, screen.cursor_y, ' ', .{ .attributes = .{ .reverse = true } });
+                }
+            }
+        }
     }
 
     fn resize(self: *TuiApp, width: usize, height: usize) !bool {
-        const changed = try self.renderer.resize(width, height);
+        var changed = try self.renderer.resize(width, height);
         if (changed) try notifyWorkspaceSize(&self.runtime, &self.registry, self.scene, width, height);
+        if (self.terminal) |terminal| {
+            if (try terminal.resize(width, terminalContentHeight(height))) changed = true;
+        }
         return changed;
     }
 
@@ -171,6 +253,10 @@ const TuiApp = struct {
         if (bytes.len != 0) try terminal_io.writeAll(terminal_io.stdout_fd, bytes);
     }
 };
+
+fn terminalContentHeight(height: usize) usize {
+    return @max(@as(usize, 1), height -| 1);
+}
 
 fn notifyWorkspaceSize(
     runtime: *hondo.runtime.Runtime,
@@ -198,7 +284,12 @@ fn notifyWorkspaceSize(
     try hondo.native_view_runtime.flushNotifications(runtime, registry);
 }
 
-pub fn run(init: std.process.Init, editor: *editor_module.Editor, api: *api_module.Api) !u8 {
+pub fn run(
+    init: std.process.Init,
+    editor: *editor_module.Editor,
+    api: *api_module.Api,
+    terminal: *terminal_controller.Controller,
+) !u8 {
     var session = try hondo.terminal.session.Session.begin(
         terminal_io.stdin_fd,
         terminal_io.stdout_fd,
@@ -229,20 +320,29 @@ pub fn run(init: std.process.Init, editor: *editor_module.Editor, api: *api_modu
 
     var app = try TuiApp.init(init.gpa, editor, api, initial_size.width, initial_size.height);
     defer app.deinit();
+    try app.attachTerminal(terminal);
     try app.writeFrame();
 
     while (true) {
         const has_input = try hondo.terminal.wait.readable(terminal_io.stdin_fd, resize_poll_ms);
+        var should_render = terminal.poll() catch false;
         const resize = size_tracker.poll(terminal_io.stdout_fd) catch null;
         if (resize) |new_size| {
-            if (try app.resize(new_size.width, new_size.height)) try app.writeFrame();
+            if (try app.resize(new_size.width, new_size.height)) should_render = true;
         }
-        if (!has_input) continue;
+        if (!has_input) {
+            if (should_render and terminal.isVisible()) try app.writeFrame();
+            continue;
+        }
 
         const event = (try readTerminalEvent(terminal_io.stdin_fd)) orelse break;
-        if (isImmediateQuitEvent(event)) break;
-        _ = try app.dispatch(event);
-        if (editor.quit_requested) break;
+        if (!terminal.isVisible() and isImmediateQuitEvent(event)) break;
+        if (terminal.isVisible()) {
+            _ = try app.dispatchTerminal(event);
+        } else {
+            _ = try app.dispatch(event);
+            if (editor.quit_requested) break;
+        }
         try app.writeFrame();
     }
     return 0;
