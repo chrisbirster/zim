@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const is_windows = builtin.os.tag == .windows;
 const c = if (is_windows) struct {} else @cImport({
     @cInclude("sys/ioctl.h");
+    @cInclude("sys/wait.h");
     @cInclude("unistd.h");
 });
 
@@ -120,7 +121,8 @@ pub const Session = struct {
     pub fn wait(self: *Session) !void {
         if (comptime is_windows) return error.PtyUnsupported;
         if (self.reaped) return;
-        _ = std.posix.waitpid(self.native.pid, 0);
+        var status: c_int = 0;
+        if (c.waitpid(self.native.pid, &status, 0) < 0) return error.PtyWaitFailed;
         self.reaped = true;
     }
 
@@ -131,7 +133,8 @@ pub const Session = struct {
         }
         if (!self.reaped) {
             self.terminate() catch {};
-            _ = std.posix.waitpid(self.native.pid, 0);
+            var status: c_int = 0;
+            _ = c.waitpid(self.native.pid, &status, 0);
             self.reaped = true;
         }
         if (!self.closed) {
