@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 
 const is_windows = builtin.os.tag == .windows;
 const c = if (is_windows) struct {} else @cImport({
+    @cInclude("poll.h");
     @cInclude("sys/ioctl.h");
     @cInclude("sys/wait.h");
     @cInclude("unistd.h");
@@ -91,6 +92,22 @@ pub const Session = struct {
         };
     }
 
+    pub fn readAvailable(self: *Session, buffer: []u8) !usize {
+        if (comptime is_windows) return error.PtyUnsupported;
+        if (self.closed or buffer.len == 0) return 0;
+
+        var descriptor = c.struct_pollfd{
+            .fd = self.native.master.handle,
+            .events = c.POLLIN,
+            .revents = 0,
+        };
+        const ready = c.poll(&descriptor, 1, 0);
+        if (ready < 0) return error.PtyPollFailed;
+        if (ready == 0) return 0;
+        if ((descriptor.revents & (c.POLLIN | c.POLLHUP)) == 0) return 0;
+        return self.read(buffer);
+    }
+
     pub fn write(self: *Session, bytes: []const u8) !void {
         if (comptime is_windows) return error.PtyUnsupported;
         if (self.closed) return error.PtyClosed;
@@ -116,6 +133,17 @@ pub const Session = struct {
             error.ProcessNotFound => return,
             else => return err,
         };
+    }
+
+    pub fn exited(self: *Session) !bool {
+        if (comptime is_windows) return error.PtyUnsupported;
+        if (self.reaped) return true;
+        var status: c_int = 0;
+        const result = c.waitpid(self.native.pid, &status, c.WNOHANG);
+        if (result < 0) return error.PtyWaitFailed;
+        if (result == 0) return false;
+        self.reaped = true;
+        return true;
     }
 
     pub fn wait(self: *Session) !void {
@@ -177,5 +205,24 @@ test "POSIX PTY runs a child with terminal semantics" {
         try output.appendSlice(std.testing.allocator, buffer[0..n]);
     }
     try session.wait();
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "0.16") != null);
+}
+
+test "POSIX PTY exposes nonblocking output and exit polling" {
+    if (comptime is_windows) return error.SkipZigTest;
+
+    var session = try Session.spawn(std.testing.allocator, std.testing.io, &.{ "zig", "version" }, .{});
+    defer session.deinit();
+
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    var buffer: [1024]u8 = undefined;
+    var attempts: usize = 0;
+    while (attempts < 1000) : (attempts += 1) {
+        const n = try session.readAvailable(&buffer);
+        if (n != 0) try output.appendSlice(std.testing.allocator, buffer[0..n]);
+        if (try session.exited()) break;
+    }
+    try std.testing.expect(try session.exited());
     try std.testing.expect(std.mem.indexOf(u8, output.items, "0.16") != null);
 }
