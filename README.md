@@ -23,14 +23,14 @@ keyboard / terminal
 └──────────┬───────────┘
            │ direct Zig calls
            ▼
-┌──────────────────────────────────────┐
-│              Zim Core                │
-│                                      │
-│ buffers   windows   modes   keymaps  │
-│ commands  undo      marks   events   │
-│ LSP       parsing   search  plugins  │
-│ pins                                 │
-└──────────┬───────────────────────────┘
+┌────────────────────────────────────────────┐
+│                  Zim Core                  │
+│                                            │
+│ buffers   windows   modes    keymaps       │
+│ commands  undo      marks    events        │
+│ LSP       parsing   search   plugins       │
+│ pins      extmarks  diagnostics  popup UI  │
+└──────────┬─────────────────────────────────┘
            │
            ├── embedded Lua 5.4 API
            │      │
@@ -49,32 +49,78 @@ Lua is the primary configuration and in-process plugin language. External plugin
 
 ## Current status
 
-Zim is a real modal editor under active pre-1.0 development. The current development version is **`v0.6.0 — Pins`**.
+Zim is a real modal editor under active pre-1.0 development. The current development version is **`v0.7.0 — Extmarks + Plugin UI Primitives`**.
 
-`v0.6.0` builds on the Zen Workspace with persistent project navigation:
+`v0.7.0` builds durable editor annotations and plugin-facing UI on top of the public Zig API:
 
-- stable native Pin IDs and an ordered Pins model
-- persisted file path, line, column, and optional label
-- project-relative persistence under Zim's session/config storage
-- immediate persistence across restart
-- missing-target protection instead of silently creating deleted files
-- `:PinAdd`, `:PinRemove`, `:PinMove`, `:PinJump`, and `:PinList`
-- linewise numeric jumps with `'1` through `'9`
-- exact line/column jumps with backtick + `1` through `9`
-- `gp` to open a centered Hondo pin switcher
-- Project-zone summaries for the first nine Pins
-- native switcher navigation with `j`/`k`, arrows, Enter, Esc, and direct `1`–`9`
-- public Zig Pins API plus `zim.pin` Lua bindings
-- a `pins` plugin capability
-- tests proving handled Pin navigation remains on the native Zig/Hondo input path
+- namespace-owned, buffer-attached extmarks with stable IDs
+- ranged extmarks with start/end gravity
+- tracking through native insert/delete, undo/redo, text replacement, formatting, and LSP WorkspaceEdits
+- native anchored highlights, gutter signs, and end-of-line virtual text
+- LSP and plugin diagnostics represented by the same extmark primitive
+- a reserved native LSP diagnostics namespace
+- public Zig namespace/extmark/diagnostics/popup APIs
+- Lua `zim.extmark`, `zim.diagnostic`, and `zim.ui` bindings
+- plugin compatibility capabilities for `extmarks`, `diagnostics`, and `ui`
+- a native popup model whose selection semantics stay in Zig
+- centered Hondo rendering for plugin popups and LSP completion
+- completion acceptance using the LSP item's native `insertText`
+- tests proving popup/completion interaction stays on the native editor input path
 - real pinned ZLS 0.16.0 subprocess smoke testing
 - Ubuntu, macOS, and Windows CI
 
 ```text
-ZIM 0.6.0 — YOUR NEW CODE OVERLORD
+ZIM 0.7.0 — YOUR NEW CODE OVERLORD
 ```
 
-See [Pins](docs/PINS.md) for persistence, commands, direct jumps, the centered switcher, and Lua usage.
+See [Extmarks, Diagnostics, and Plugin UI](docs/EXTMARKS_AND_PLUGIN_UI.md) for the public v0.7 model and Lua examples.
+
+## Extmarks, diagnostics, and plugin UI
+
+Create a namespace and place a durable annotation:
+
+```lua
+local buffer = zim.buf.current()
+local ns = zim.extmark.namespace('demo')
+
+local id = zim.extmark.set(buffer, ns, 3, 5, {
+  end_line = 3,
+  end_column = 12,
+  highlight = 'DiagnosticWarn',
+  sign = '!',
+  virtual_text = 'check this',
+})
+```
+
+Extmarks belong to buffers and namespaces. Their anchors move through the native edit path instead of remaining fixed at raw line numbers.
+
+Publish diagnostics through the same primitive:
+
+```lua
+zim.diagnostic.publish(buffer, ns, {
+  {
+    line = 4,
+    severity = 'warning',
+    message = 'suspicious value',
+  },
+})
+```
+
+Show a native plugin popup:
+
+```lua
+zim.ui.popup('Actions', {
+  'Format document',
+  'Run tests',
+  'Open definition',
+})
+```
+
+Plugins provide popup content, while Zig owns open/closed state and selection. Hondo renders coarse popup state; handled navigation keys remain on the native editor path.
+
+LSP completion now uses the same popup model. Zig owns the completion items and selected index, and accepting an item inserts its LSP `insertText` through the native buffer edit path.
+
+See [Extmarks, Diagnostics, and Plugin UI](docs/EXTMARKS_AND_PLUGIN_UI.md) for gravity, decorations, diagnostics, popup behavior, and deliberate v0.7 limits.
 
 ## Pins
 
@@ -151,7 +197,7 @@ In Normal mode, `Tab`/`Shift-Tab` traverse workspace focus. When a key belongs t
 
 While a side zone is focused, `c` or `Enter` toggles its collapsed rail. Context uses Left/Right to select a surface. On narrow terminals Context and then Project collapse automatically to small focusable rails instead of disappearing.
 
-Pins are editor-owned state summarized through the same coarse NativeView boundary used by project/LSP state. The centered switcher is Hondo chrome, while its handled navigation keys remain native.
+Pins, diagnostics summaries, and plugin popup state are editor-owned data summarized through the coarse NativeView boundary. The Hondo shell renders them without owning editor semantics.
 
 See [Zen Workspace](docs/ZEN_WORKSPACE.md) for the workspace model and native-state boundary.
 
@@ -180,7 +226,7 @@ Update, list, or remove plugins:
 
 Package mutations are applied on disk immediately and the resulting exact Git commit is recorded in `plugins.lock`. Restart Zim to load newly installed/updated code or unload removed code.
 
-Plugins are trusted in-process Lua code. Zim does not claim Neovim API/plugin compatibility.
+Plugins are trusted in-process Lua code. Capabilities such as `extmarks`, `diagnostics`, and `ui` are compatibility metadata, not sandbox permissions. Zim does not claim Neovim API/plugin compatibility.
 
 See [Plugins](docs/PLUGINS.md) for package management and plugin authoring, and [Lua Configuration](docs/LUA_CONFIGURATION.md) for the public Lua editor API.
 
@@ -227,6 +273,7 @@ zim.autocmd.create('BufWritePost', function(ev)
 end)
 
 local pin_id = zim.pin.add('working location')
+local annotations = zim.extmark.namespace('annotations')
 ```
 
 The current keymap bridge intentionally starts small: `lhs` and `rhs` are single Unicode codepoints. Richer mapping notation belongs to later extension work.
@@ -273,7 +320,7 @@ zig build run -- .
 zig build run -- --headless
 ```
 
-Headless startup still initializes the public API, persisted Pins, plugin manager, installed plugins, and Lua configuration; it simply skips the Hondo TUI.
+Headless startup still initializes the public API, persisted Pins, plugin manager, installed plugins, Lua configuration, extmarks, diagnostics, and popup model; it simply skips the Hondo TUI.
 
 ### Format
 
@@ -287,10 +334,11 @@ zig fmt src build.zig
 zig build test
 ```
 
-CI additionally runs the pure Zig core gate, Pins persistence/Lua tests, the real Git-backed plugin package lifecycle test, Hondo integration tests including native Pin navigation, the full suite, and the pinned real-ZLS smoke where configured.
+CI additionally runs the pure Zig core gate, Pins persistence/Lua tests, extmark/edit-tracking and plugin UI tests, the real Git-backed plugin package lifecycle test, Hondo integration tests including native Pin and popup/completion navigation, the full suite, and the pinned real-ZLS smoke where configured.
 
 ## Read next
 
+- [Extmarks, Diagnostics, and Plugin UI](docs/EXTMARKS_AND_PLUGIN_UI.md)
 - [Pins](docs/PINS.md)
 - [Zen Workspace](docs/ZEN_WORKSPACE.md)
 - [Plugins](docs/PLUGINS.md)

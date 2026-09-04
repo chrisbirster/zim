@@ -1,4 +1,5 @@
 const std = @import("std");
+const extmarks_module = @import("extmarks.zig");
 
 pub const BufferId = u32;
 
@@ -40,6 +41,7 @@ pub const Buffer = struct {
     next_state_id: u64 = 2,
     undo: std.ArrayList(Snapshot) = .empty,
     redo: std.ArrayList(Snapshot) = .empty,
+    extmarks: extmarks_module.Store,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -49,12 +51,14 @@ pub const Buffer = struct {
         return .{
             .id = id,
             .path = if (path) |value| try allocator.dupe(u8, value) else null,
+            .extmarks = extmarks_module.Store.init(allocator),
         };
     }
 
     pub fn deinit(self: *Buffer, allocator: std.mem.Allocator) void {
         if (self.path) |path| allocator.free(path);
         self.text.deinit(allocator);
+        self.extmarks.deinit();
         freeSnapshots(&self.undo, allocator);
         self.undo.deinit(allocator);
         freeSnapshots(&self.redo, allocator);
@@ -69,6 +73,7 @@ pub const Buffer = struct {
     }
 
     pub fn setLoadedText(self: *Buffer, allocator: std.mem.Allocator, value: []const u8) !void {
+        self.extmarks.applyTextReplacement(self.text.items, value);
         self.text.items.len = 0;
         try self.text.appendSlice(allocator, value);
         self.modified = false;
@@ -158,6 +163,7 @@ pub const Buffer = struct {
         var previous = self.undo.items[self.undo.items.len - 1];
         self.undo.items.len -= 1;
         defer previous.deinit(allocator);
+        self.extmarks.applyTextReplacement(self.text.items, previous.text);
         try self.restoreSnapshot(allocator, previous);
         self.revision += 1;
         self.modified = self.state_id != self.saved_state_id;
@@ -174,10 +180,46 @@ pub const Buffer = struct {
         var next = self.redo.items[self.redo.items.len - 1];
         self.redo.items.len -= 1;
         defer next.deinit(allocator);
+        self.extmarks.applyTextReplacement(self.text.items, next.text);
         try self.restoreSnapshot(allocator, next);
         self.revision += 1;
         self.modified = self.state_id != self.saved_state_id;
         return @min(next.cursor, self.text.items.len);
+    }
+
+    pub fn insertBytesAt(self: *Buffer, allocator: std.mem.Allocator, index: usize, bytes: []const u8) !void {
+        if (bytes.len == 0) return;
+        const insertion = @min(index, self.text.items.len);
+        const old_len = self.text.items.len;
+        self.extmarks.applyEdit(insertion, insertion, bytes.len);
+        try self.text.ensureTotalCapacity(allocator, old_len + bytes.len);
+        self.text.items.len = old_len + bytes.len;
+        std.mem.copyBackwards(
+            u8,
+            self.text.items[insertion + bytes.len ..],
+            self.text.items[insertion..old_len],
+        );
+        @memcpy(self.text.items[insertion .. insertion + bytes.len], bytes);
+    }
+
+    pub fn deleteBytes(self: *Buffer, start_index: usize, end_index: usize) void {
+        const start = @min(start_index, self.text.items.len);
+        const end = @min(@max(end_index, start), self.text.items.len);
+        if (start == end) return;
+        self.extmarks.applyEdit(start, end, 0);
+        const old_len = self.text.items.len;
+        std.mem.copyForwards(
+            u8,
+            self.text.items[start .. old_len - (end - start)],
+            self.text.items[end..old_len],
+        );
+        self.text.items.len = old_len - (end - start);
+    }
+
+    pub fn replaceText(self: *Buffer, allocator: std.mem.Allocator, value: []const u8) !void {
+        self.extmarks.applyTextReplacement(self.text.items, value);
+        self.text.items.len = 0;
+        try self.text.appendSlice(allocator, value);
     }
 
     pub fn encodeUndoJournal(self: *const Buffer, allocator: std.mem.Allocator) ![]u8 {

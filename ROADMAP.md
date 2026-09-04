@@ -130,7 +130,7 @@ Validation evidence: squash-merged main commit `cbc41cf9fde6065ffe078080aabd63db
 
 ## v0.6.0 — Pins
 
-**Status: implementation complete; validation pending.**
+**Status: complete.**
 
 **Goal:** make project navigation fast and persistent.
 
@@ -149,23 +149,47 @@ Validation evidence: squash-merged main commit `cbc41cf9fde6065ffe078080aabd63db
 - [x] Hondo integration coverage proving handled Pin navigation remains native
 - [x] coherent 0.6.0 executable/Lua/plugin/build versioning
 - [x] user-facing Pins documentation
-- [ ] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
-- [ ] exact merged-main CI green
+- [x] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
+- [x] exact merged-main CI green
+
+Validation evidence: exact PR head `8491d95e913f18f33d4748d67ae9e0837b69df15` passed CI #167. Squash-merged main commit `3f46970a553fb5a37017eed039b782fe9af02152` passed CI #168 on Ubuntu, macOS, and Windows; Ubuntu also passed the pinned real-ZLS 0.16.0 smoke.
 
 **Exit condition:** Pins survive restart, are reorderable and scriptable, support fast direct jumps 1–9, and are visible/selectable from the Zen Workspace without weakening the native editor hot path.
 
 ## v0.7.0 — Extmarks + Plugin UI Primitives
 
-**Goal:** give plugins and language tooling durable annotation/UI primitives.
+**Status: implementation complete; final release validation pending.**
 
-- [ ] namespaces
-- [ ] revision-aware/ranged extmarks
-- [ ] anchored decorations/highlights
-- [ ] signs/gutter metadata
-- [ ] virtual text/annotations where justified
-- [ ] editor-owned diagnostics publishing API
-- [ ] floating/popup primitives
-- [ ] completion popup model
+**Goal:** give plugins and language tooling durable annotation/UI primitives without moving editor semantics out of Zig.
+
+- [x] namespace-owned extmark IDs and registry
+- [x] stable buffer-owned native Extmark model
+- [x] ranged extmarks with independent start/end gravity
+- [x] edit tracking through insertion/deletion/replacement
+- [x] edit tracking through undo/redo
+- [x] edit tracking through formatting and LSP WorkspaceEdits
+- [x] anchored native decorations/highlights
+- [x] signs/gutter metadata
+- [x] end-of-line virtual text/annotations
+- [x] editor-owned diagnostics publishing API
+- [x] LSP diagnostics projected into the same extmark primitive
+- [x] native floating/popup model with Zig-owned selection
+- [x] passive Hondo popup rendering
+- [x] completion popup model using parsed LSP completion items
+- [x] native completion selection/cancel/accept behavior
+- [x] completion acceptance inserts the selected LSP `insertText`
+- [x] public Zig namespace/extmark/diagnostics/popup API
+- [x] Lua `zim.extmark`, `zim.diagnostic`, and `zim.ui` bindings
+- [x] plugin capabilities for `extmarks`, `diagnostics`, and `ui`
+- [x] integration tests proving edit tracking and native UI ownership
+- [x] coherent 0.7.0 executable/Lua/plugin/build versioning
+- [x] user-facing Extmarks/Diagnostics/Plugin UI documentation
+- [ ] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
+- [ ] exact merged-main CI green
+
+The implementation preflight at clean product head `6a414e981021ccea8dc7dd24a5ff341b4412d092` passed Zig formatting, the Solid/Hondo bundle, the pure core suite, and Hondo integration before release documentation was added.
+
+**Exit condition:** a Lua plugin can create a namespace, place durable annotations that track edits, render highlights/signs/virtual text, publish diagnostics, and drive a native popup/completion surface through the public Zim API.
 
 ## v0.8.0 — Jobs + Terminal
 

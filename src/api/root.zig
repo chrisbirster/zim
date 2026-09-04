@@ -7,11 +7,15 @@ pub const commands = @import("commands.zig");
 pub const keymaps = @import("keymaps.zig");
 pub const events = @import("events.zig");
 pub const pins = @import("../pins.zig");
+pub const extmarks = @import("../extmarks.zig");
+pub const plugin_ui = @import("../plugin_ui.zig");
 
 pub const BufferHandle = handles.BufferHandle;
 pub const WindowHandle = handles.WindowHandle;
 pub const TabHandle = handles.TabHandle;
 pub const PinId = pins.PinId;
+pub const NamespaceId = extmarks.NamespaceId;
+pub const ExtmarkId = extmarks.ExtmarkId;
 
 pub const Api = struct {
     allocator: std.mem.Allocator,
@@ -109,6 +113,59 @@ pub const Api = struct {
     pub fn pinJump(self: *Api, editor: *editor_module.Editor, slot: usize, exact: bool) !bool {
         _ = self;
         return editor.pinJumpSlot(slot, exact);
+    }
+
+    pub fn namespaceCreate(self: *Api, editor: *editor_module.Editor, name: []const u8) !NamespaceId {
+        _ = self;
+        return editor.extmarkNamespaceCreate(name);
+    }
+
+    pub fn namespaceDelete(self: *Api, editor: *editor_module.Editor, namespace_id: NamespaceId) bool {
+        _ = self;
+        return editor.extmarkNamespaceDelete(namespace_id);
+    }
+
+    pub fn extmarkSet(
+        self: *Api,
+        editor: *editor_module.Editor,
+        buffer: BufferHandle,
+        namespace_id: NamespaceId,
+        start: usize,
+        opts: extmarks.Options,
+    ) !ExtmarkId {
+        _ = self;
+        return editor.extmarkSet(buffer.id, namespace_id, start, opts);
+    }
+
+    pub fn extmarkDelete(self: *Api, editor: *editor_module.Editor, buffer: BufferHandle, namespace_id: NamespaceId, id: ExtmarkId) bool {
+        _ = self;
+        return editor.extmarkDelete(buffer.id, namespace_id, id);
+    }
+
+    pub fn extmarkClear(self: *Api, editor: *editor_module.Editor, buffer: BufferHandle, namespace_id: NamespaceId) bool {
+        _ = self;
+        return editor.extmarkClear(buffer.id, namespace_id);
+    }
+
+    pub fn diagnosticPublish(
+        self: *Api,
+        editor: *editor_module.Editor,
+        buffer: BufferHandle,
+        namespace_id: NamespaceId,
+        diagnostics: []const extmarks.Diagnostic,
+    ) !void {
+        _ = self;
+        try editor.publishDiagnostics(buffer.id, namespace_id, diagnostics);
+    }
+
+    pub fn popupOpen(self: *Api, editor: *editor_module.Editor, title: []const u8, labels: []const []const u8) !void {
+        _ = self;
+        try editor.popupShow(.plugin, title, labels);
+    }
+
+    pub fn popupClose(self: *Api, editor: *editor_module.Editor) void {
+        _ = self;
+        editor.popupClose();
     }
 
     pub fn optionGet(self: *const Api, name: options.Name) options.Value {
@@ -284,4 +341,21 @@ test "public key handling emits typed mode and text events" {
     try std.testing.expectEqual(@as(usize, 2), count.mode_changes);
     try std.testing.expectEqual(@as(usize, 1), count.text_changes);
     try std.testing.expectEqualStrings("x", editor.text());
+}
+
+test "public extmark diagnostics and popup API share native editor state" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    try editor.setText("alpha beta");
+    var api = Api.init(std.testing.allocator);
+    defer api.deinit();
+    const buffer = api.currentBuffer(&editor);
+    const ns = try api.namespaceCreate(&editor, "plugin.demo");
+    const id = try api.extmarkSet(&editor, buffer, ns, 6, .{ .highlight = "Demo", .sign = "*", .virtual_text = "note" });
+    try std.testing.expectEqual(@as(usize, 6), editor.currentBuffer().extmarks.find(ns, id).?.start);
+    try api.diagnosticPublish(&editor, buffer, ns, &.{.{ .start = 0, .end = 5, .severity = .warning, .message = "warn" }});
+    try std.testing.expectEqual(@as(usize, 1), editor.currentBuffer().extmarks.diagnosticCount());
+    try api.popupOpen(&editor, "Demo", &.{ "one", "two" });
+    try std.testing.expect(editor.popup.open);
+    try std.testing.expectEqualStrings("one", editor.popup.selectedLabel().?);
 }

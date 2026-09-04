@@ -30,6 +30,8 @@ const CoarseState = struct {
     pins_revision: u64,
     pin_switcher_open: bool,
     pin_switcher_index: usize,
+    extmarks_revision: u64,
+    popup_revision: u64,
 };
 
 const WindowHit = struct {
@@ -142,6 +144,8 @@ fn captureCoarseState(editor: *const editor_module.Editor) CoarseState {
         .pins_revision = editor.pins.revision,
         .pin_switcher_open = editor.pin_switcher_open,
         .pin_switcher_index = editor.pin_switcher_index,
+        .extmarks_revision = editor.currentBufferConst().extmarks.revision,
+        .popup_revision = editor.popup.revision,
     };
 }
 
@@ -160,7 +164,9 @@ fn shouldPublishKeyState(before: CoarseState, after: CoarseState) bool {
         before.status_hash != after.status_hash or
         before.pins_revision != after.pins_revision or
         before.pin_switcher_open != after.pin_switcher_open or
-        before.pin_switcher_index != after.pin_switcher_index;
+        before.pin_switcher_index != after.pin_switcher_index or
+        before.extmarks_revision != after.extmarks_revision or
+        before.popup_revision != after.popup_revision;
 }
 
 fn hashBytes(bytes: []const u8) u64 {
@@ -339,6 +345,19 @@ fn paintWindow(
                 bounds.y + row,
                 content_width,
             );
+            try paintExtmarks(
+                editor,
+                grid,
+                buffer.id,
+                line_start,
+                end,
+                bounds.x,
+                gutter,
+                bounds.x + gutter,
+                bounds.y + row,
+                content_width,
+                line,
+            );
         }
 
         if (active and window.cursor >= line_start and window.cursor <= end and content_width > 0) {
@@ -399,6 +418,55 @@ fn paintSyntaxHighlights(
             syntaxStyle(highlight.capture),
         );
     }
+}
+
+fn paintExtmarks(
+    editor: *const editor_module.Editor,
+    grid: *hondo.cell_grid.CellGrid,
+    buffer_id: editor_module.BufferId,
+    line_start: usize,
+    line_end: usize,
+    gutter_x: usize,
+    gutter: usize,
+    content_x: usize,
+    y: usize,
+    content_width: usize,
+    line: []const u8,
+) !void {
+    const buffer = editor.bufferByIdConst(buffer_id) orelse return;
+    for (buffer.extmarks.items()) |mark| {
+        const anchored_here = mark.start >= line_start and mark.start <= line_end;
+        if (anchored_here and gutter > 0) {
+            if (mark.sign) |sign| try grid.paintUtf8Styled(gutter_x, y, sign, 1, extmarkStyle(mark.highlight));
+        }
+        if (mark.highlight != null and mark.end > mark.start) {
+            const start = @max(line_start, mark.start);
+            const finish = @min(line_end, mark.end);
+            if (start < finish and start <= buffer.text.items.len and finish <= buffer.text.items.len) {
+                const prefix = hondo.cell_grid.displayWidth(buffer.text.items[line_start..start]);
+                if (prefix < content_width) {
+                    try grid.paintUtf8Styled(content_x + prefix, y, buffer.text.items[start..finish], content_width - prefix, extmarkStyle(mark.highlight));
+                }
+            }
+        }
+        if (anchored_here) {
+            if (mark.virtual_text) |annotation| {
+                const used = hondo.cell_grid.displayWidth(line);
+                if (used + 1 < content_width) {
+                    try grid.paintUtf8Styled(content_x + used + 1, y, annotation, content_width - used - 1, .{ .foreground = .{ .ansi = 8 }, .attributes = .{ .italic = true, .dim = true } });
+                }
+            }
+        }
+    }
+}
+
+fn extmarkStyle(name: ?[]const u8) @TypeOf((hondo.cell_grid.Cell{}).style) {
+    const value = name orelse return .{ .foreground = .{ .ansi = 13 } };
+    if (std.mem.eql(u8, value, "DiagnosticError")) return .{ .foreground = .{ .ansi = 9 }, .attributes = .{ .bold = true } };
+    if (std.mem.eql(u8, value, "DiagnosticWarn")) return .{ .foreground = .{ .ansi = 11 }, .attributes = .{ .bold = true } };
+    if (std.mem.eql(u8, value, "DiagnosticInfo")) return .{ .foreground = .{ .ansi = 14 } };
+    if (std.mem.eql(u8, value, "DiagnosticHint")) return .{ .foreground = .{ .ansi = 8 }, .attributes = .{ .italic = true } };
+    return .{ .foreground = .{ .ansi = 13 } };
 }
 
 fn syntaxStyle(capture: []const u8) @TypeOf((hondo.cell_grid.Cell{}).style) {
@@ -518,6 +586,11 @@ fn publishState(state: *State, context: hondo.native_view.Context) !void {
         .pins = state.editor.pins.entries.items,
         .pinSwitcherOpen = state.editor.pin_switcher_open,
         .pinSwitcherIndex = state.editor.pin_switcher_index,
+        .popupOpen = state.editor.popup.open,
+        .popupKind = @tagName(state.editor.popup.kind),
+        .popupTitle = state.editor.popup.title.items,
+        .popupItems = state.editor.popup.items.items,
+        .popupSelected = state.editor.popup.selected,
     }, .{});
     defer state.editor.allocator.free(payload);
     try context.notify(payload);
@@ -525,7 +598,7 @@ fn publishState(state: *State, context: hondo.native_view.Context) !void {
 
 fn diagnosticCount(editor: *const editor_module.Editor) usize {
     var total: usize = 0;
-    for (editor.lsp_state.diagnostics.entries.items) |entry| total += entry.items.items.len;
+    for (editor.buffers.items) |buffer| total += buffer.extmarks.diagnosticCount();
     return total;
 }
 fn escapeJson(source: []const u8, output: []u8) []const u8 {

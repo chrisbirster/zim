@@ -4,6 +4,8 @@ test {
     _ = @import("cli.zig");
     _ = @import("editor.zig");
     _ = @import("pins.zig");
+    _ = @import("extmarks.zig");
+    _ = @import("plugin_ui.zig");
     _ = @import("api.zig");
     _ = @import("lua_runtime.zig");
     _ = @import("plugin_manager.zig");
