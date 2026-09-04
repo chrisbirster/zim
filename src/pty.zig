@@ -2,14 +2,24 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const is_windows = builtin.os.tag == .windows;
-const c = if (is_windows) struct {} else @cImport({
+const c = if (is_windows) @cImport({
+    @cDefine("_WIN32_WINNT", "0x0A00");
+    @cDefine("NTDDI_VERSION", "0x0A000006");
+    @cInclude("windows.h");
+    @cInclude("consoleapi.h");
+}) else @cImport({
     @cInclude("poll.h");
     @cInclude("sys/ioctl.h");
     @cInclude("sys/wait.h");
     @cInclude("unistd.h");
 });
 
-const Native = if (is_windows) struct {} else struct {
+const Native = if (is_windows) struct {
+    process: c.HANDLE,
+    input_write: c.HANDLE,
+    output_read: c.HANDLE,
+    pseudo_console: c.HPCON,
+} else struct {
     pid: std.posix.pid_t,
     master: std.Io.File,
 };
@@ -30,7 +40,7 @@ pub const Session = struct {
     closed: bool = false,
 
     pub fn supported() bool {
-        return !is_windows;
+        return true;
     }
 
     pub fn spawn(
@@ -39,8 +49,8 @@ pub const Session = struct {
         argv: []const []const u8,
         options: SpawnOptions,
     ) !Session {
-        if (comptime is_windows) return error.PtyUnsupported;
         if (argv.len == 0) return error.EmptyArgv;
+        if (comptime is_windows) return spawnWindows(allocator, io, argv, options);
 
         const owned = try allocator.alloc([:0]u8, argv.len);
         defer allocator.free(owned);
@@ -83,8 +93,8 @@ pub const Session = struct {
     }
 
     pub fn read(self: *Session, buffer: []u8) !usize {
-        if (comptime is_windows) return error.PtyUnsupported;
-        if (self.closed) return 0;
+        if (self.closed or buffer.len == 0) return 0;
+        if (comptime is_windows) return readWindows(self.native.output_read, buffer);
         return self.native.master.readStreaming(self.io, &.{buffer}) catch |err| switch (err) {
             error.EndOfStream => 0,
             error.InputOutput => 0,
@@ -93,8 +103,8 @@ pub const Session = struct {
     }
 
     pub fn readAvailable(self: *Session, buffer: []u8) !usize {
-        if (comptime is_windows) return error.PtyUnsupported;
         if (self.closed or buffer.len == 0) return 0;
+        if (comptime is_windows) return readAvailableWindows(self.native.output_read, buffer);
 
         var descriptor = c.struct_pollfd{
             .fd = self.native.master.handle,
@@ -109,14 +119,19 @@ pub const Session = struct {
     }
 
     pub fn write(self: *Session, bytes: []const u8) !void {
-        if (comptime is_windows) return error.PtyUnsupported;
         if (self.closed) return error.PtyClosed;
+        if (comptime is_windows) return writeWindows(self.native.input_write, bytes);
         try self.native.master.writeStreamingAll(self.io, bytes);
     }
 
     pub fn resize(self: *Session, dimensions: Dimensions) !void {
-        if (comptime is_windows) return error.PtyUnsupported;
         if (self.closed) return error.PtyClosed;
+        if (comptime is_windows) {
+            const size = windowsCoord(dimensions);
+            if (c.ResizePseudoConsole(self.native.pseudo_console, size) < 0) return error.PtyResizeFailed;
+            return;
+        }
+
         var winsize = c.struct_winsize{
             .ws_row = dimensions.rows,
             .ws_col = dimensions.columns,
@@ -127,8 +142,16 @@ pub const Session = struct {
     }
 
     pub fn terminate(self: *Session) !void {
-        if (comptime is_windows) return error.PtyUnsupported;
         if (self.reaped) return;
+        if (comptime is_windows) {
+            if (c.TerminateProcess(self.native.process, 1) == 0) {
+                const code = c.GetLastError();
+                if (code == c.ERROR_ACCESS_DENIED and try self.exited()) return;
+                return error.PtyTerminateFailed;
+            }
+            return;
+        }
+
         std.posix.kill(self.native.pid, std.posix.SIG.TERM) catch |err| switch (err) {
             error.ProcessNotFound => return,
             else => return err,
@@ -136,8 +159,17 @@ pub const Session = struct {
     }
 
     pub fn exited(self: *Session) !bool {
-        if (comptime is_windows) return error.PtyUnsupported;
         if (self.reaped) return true;
+        if (comptime is_windows) {
+            const result = c.WaitForSingleObject(self.native.process, 0);
+            if (result == c.WAIT_OBJECT_0) {
+                self.reaped = true;
+                return true;
+            }
+            if (result == c.WAIT_TIMEOUT) return false;
+            return error.PtyWaitFailed;
+        }
+
         var status: c_int = 0;
         const result = c.waitpid(self.native.pid, &status, c.WNOHANG);
         if (result < 0) return error.PtyWaitFailed;
@@ -147,8 +179,13 @@ pub const Session = struct {
     }
 
     pub fn wait(self: *Session) !void {
-        if (comptime is_windows) return error.PtyUnsupported;
         if (self.reaped) return;
+        if (comptime is_windows) {
+            if (c.WaitForSingleObject(self.native.process, c.INFINITE) != c.WAIT_OBJECT_0) return error.PtyWaitFailed;
+            self.reaped = true;
+            return;
+        }
+
         var status: c_int = 0;
         if (c.waitpid(self.native.pid, &status, 0) < 0) return error.PtyWaitFailed;
         self.reaped = true;
@@ -156,9 +193,22 @@ pub const Session = struct {
 
     pub fn deinit(self: *Session) void {
         if (comptime is_windows) {
+            if (!self.reaped) {
+                self.terminate() catch {};
+                _ = c.WaitForSingleObject(self.native.process, c.INFINITE);
+                self.reaped = true;
+            }
+            if (!self.closed) {
+                _ = c.CloseHandle(self.native.input_write);
+                _ = c.CloseHandle(self.native.output_read);
+                c.ClosePseudoConsole(self.native.pseudo_console);
+                self.closed = true;
+            }
+            _ = c.CloseHandle(self.native.process);
             self.* = undefined;
             return;
         }
+
         if (!self.reaped) {
             self.terminate() catch {};
             var status: c_int = 0;
@@ -173,6 +223,175 @@ pub const Session = struct {
     }
 };
 
+fn spawnWindows(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    argv: []const []const u8,
+    options: SpawnOptions,
+) !Session {
+    var input_read: c.HANDLE = null;
+    var input_write: c.HANDLE = null;
+    var output_read: c.HANDLE = null;
+    var output_write: c.HANDLE = null;
+
+    if (c.CreatePipe(&input_read, &input_write, null, 0) == 0) return error.PtyPipeFailed;
+    errdefer {
+        _ = c.CloseHandle(input_read);
+        _ = c.CloseHandle(input_write);
+    }
+    if (c.CreatePipe(&output_read, &output_write, null, 0) == 0) return error.PtyPipeFailed;
+    errdefer {
+        _ = c.CloseHandle(output_read);
+        _ = c.CloseHandle(output_write);
+    }
+
+    var pseudo_console: c.HPCON = undefined;
+    if (c.CreatePseudoConsole(windowsCoord(options.dimensions), input_read, output_write, 0, &pseudo_console) < 0) {
+        return error.PtySpawnFailed;
+    }
+    errdefer c.ClosePseudoConsole(pseudo_console);
+
+    _ = c.CloseHandle(input_read);
+    input_read = null;
+    _ = c.CloseHandle(output_write);
+    output_write = null;
+
+    var attribute_size: c.SIZE_T = 0;
+    _ = c.InitializeProcThreadAttributeList(null, 1, 0, &attribute_size);
+    if (attribute_size == 0) return error.PtySpawnFailed;
+    const attribute_bytes = try allocator.alignedAlloc(u8, .of(usize), attribute_size);
+    defer allocator.free(attribute_bytes);
+    const attribute_list: c.LPPROC_THREAD_ATTRIBUTE_LIST = @ptrCast(@alignCast(attribute_bytes.ptr));
+    if (c.InitializeProcThreadAttributeList(attribute_list, 1, 0, &attribute_size) == 0) return error.PtySpawnFailed;
+    defer c.DeleteProcThreadAttributeList(attribute_list);
+
+    if (c.UpdateProcThreadAttribute(
+        attribute_list,
+        0,
+        c.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+        pseudo_console,
+        @sizeOf(c.HPCON),
+        null,
+        null,
+    ) == 0) return error.PtySpawnFailed;
+
+    var startup = std.mem.zeroes(c.STARTUPINFOEXW);
+    startup.StartupInfo.cb = @sizeOf(c.STARTUPINFOEXW);
+    startup.lpAttributeList = attribute_list;
+    var process_info = std.mem.zeroes(c.PROCESS_INFORMATION);
+    var command_line = try windowsCommandLineAlloc(allocator, argv);
+    defer allocator.free(command_line);
+
+    if (c.CreateProcessW(
+        null,
+        command_line.ptr,
+        null,
+        null,
+        c.FALSE,
+        c.EXTENDED_STARTUPINFO_PRESENT,
+        null,
+        null,
+        &startup.StartupInfo,
+        &process_info,
+    ) == 0) return error.PtySpawnFailed;
+    errdefer _ = c.CloseHandle(process_info.hProcess);
+    _ = c.CloseHandle(process_info.hThread);
+
+    return .{
+        .io = io,
+        .native = .{
+            .process = process_info.hProcess,
+            .input_write = input_write,
+            .output_read = output_read,
+            .pseudo_console = pseudo_console,
+        },
+    };
+}
+
+fn readWindows(handle: c.HANDLE, buffer: []u8) !usize {
+    var read_count: c.DWORD = 0;
+    const requested: c.DWORD = @intCast(@min(buffer.len, std.math.maxInt(c.DWORD)));
+    if (c.ReadFile(handle, buffer.ptr, requested, &read_count, null) == 0) {
+        if (c.GetLastError() == c.ERROR_BROKEN_PIPE) return 0;
+        return error.PtyReadFailed;
+    }
+    return read_count;
+}
+
+fn readAvailableWindows(handle: c.HANDLE, buffer: []u8) !usize {
+    var available: c.DWORD = 0;
+    if (c.PeekNamedPipe(handle, null, 0, null, &available, null) == 0) {
+        if (c.GetLastError() == c.ERROR_BROKEN_PIPE) return 0;
+        return error.PtyPollFailed;
+    }
+    if (available == 0) return 0;
+    const count = @min(buffer.len, @as(usize, available));
+    return readWindows(handle, buffer[0..count]);
+}
+
+fn writeWindows(handle: c.HANDLE, bytes: []const u8) !void {
+    var offset: usize = 0;
+    while (offset < bytes.len) {
+        var written: c.DWORD = 0;
+        const count: c.DWORD = @intCast(@min(bytes.len - offset, std.math.maxInt(c.DWORD)));
+        if (c.WriteFile(handle, bytes[offset..].ptr, count, &written, null) == 0) return error.PtyWriteFailed;
+        if (written == 0) return error.PtyWriteFailed;
+        offset += written;
+    }
+}
+
+fn windowsCoord(dimensions: Dimensions) c.COORD {
+    const max_short: u16 = @intCast(std.math.maxInt(c.SHORT));
+    return .{
+        .X = @intCast(@max(@as(u16, 1), @min(dimensions.columns, max_short))),
+        .Y = @intCast(@max(@as(u16, 1), @min(dimensions.rows, max_short))),
+    };
+}
+
+fn windowsCommandLineAlloc(allocator: std.mem.Allocator, argv: []const []const u8) ![:0]u16 {
+    var buffer: std.ArrayList(u8) = .empty;
+    defer buffer.deinit(allocator);
+
+    for (argv, 0..) |arg, index| {
+        if (index != 0) try buffer.append(allocator, ' ');
+        var needs_quotes = arg.len == 0;
+        for (arg) |byte| {
+            if (byte <= ' ' or byte == '"') needs_quotes = true;
+            if (index == 0 and byte == '"') return error.InvalidArg0;
+        }
+        if (!needs_quotes) {
+            try buffer.appendSlice(allocator, arg);
+            continue;
+        }
+
+        try buffer.append(allocator, '"');
+        var backslashes: usize = 0;
+        for (arg) |byte| {
+            if (byte == '\\') {
+                backslashes += 1;
+                continue;
+            }
+            if (byte == '"') {
+                try appendByteNTimes(&buffer, allocator, '\\', backslashes * 2 + 1);
+                try buffer.append(allocator, '"');
+                backslashes = 0;
+                continue;
+            }
+            try appendByteNTimes(&buffer, allocator, '\\', backslashes);
+            backslashes = 0;
+            try buffer.append(allocator, byte);
+        }
+        try appendByteNTimes(&buffer, allocator, '\\', backslashes * 2);
+        try buffer.append(allocator, '"');
+    }
+
+    return std.unicode.utf8ToUtf16LeAllocZ(allocator, buffer.items);
+}
+
+fn appendByteNTimes(list: *std.ArrayList(u8), allocator: std.mem.Allocator, byte: u8, count: usize) !void {
+    for (0..count) |_| try list.append(allocator, byte);
+}
+
 extern "c" fn forkpty(
     amaster: *c_int,
     name: ?[*]u8,
@@ -181,17 +400,10 @@ extern "c" fn forkpty(
 ) c_int;
 
 test "PTY platform boundary is explicit" {
-    if (comptime is_windows) {
-        try std.testing.expect(!Session.supported());
-        try std.testing.expectError(error.PtyUnsupported, Session.spawn(std.testing.allocator, std.testing.io, &.{ "zig", "version" }, .{}));
-    } else {
-        try std.testing.expect(Session.supported());
-    }
+    try std.testing.expect(Session.supported());
 }
 
-test "POSIX PTY runs a child with terminal semantics" {
-    if (comptime is_windows) return error.SkipZigTest;
-
+test "PTY runs a child with terminal semantics" {
     var session = try Session.spawn(std.testing.allocator, std.testing.io, &.{ "zig", "version" }, .{ .dimensions = .{ .columns = 100, .rows = 30 } });
     defer session.deinit();
     try session.resize(.{ .columns = 120, .rows = 40 });
@@ -208,9 +420,7 @@ test "POSIX PTY runs a child with terminal semantics" {
     try std.testing.expect(std.mem.indexOf(u8, output.items, "0.16") != null);
 }
 
-test "POSIX PTY exposes nonblocking output and exit polling" {
-    if (comptime is_windows) return error.SkipZigTest;
-
+test "PTY exposes nonblocking output and exit polling" {
     var session = try Session.spawn(std.testing.allocator, std.testing.io, &.{ "zig", "version" }, .{});
     defer session.deinit();
 
