@@ -217,12 +217,16 @@ test "POSIX PTY exposes nonblocking output and exit polling" {
     var output: std.ArrayList(u8) = .empty;
     defer output.deinit(std.testing.allocator);
     var buffer: [1024]u8 = undefined;
-    var attempts: usize = 0;
-    while (attempts < 1000) : (attempts += 1) {
+
+    const first = try session.readAvailable(&buffer);
+    if (first != 0) try output.appendSlice(std.testing.allocator, buffer[0..first]);
+    try session.wait();
+    while (true) {
         const n = try session.readAvailable(&buffer);
-        if (n != 0) try output.appendSlice(std.testing.allocator, buffer[0..n]);
-        if (try session.exited()) break;
+        if (n == 0) break;
+        try output.appendSlice(std.testing.allocator, buffer[0..n]);
     }
+
     try std.testing.expect(try session.exited());
     try std.testing.expect(std.mem.indexOf(u8, output.items, "0.16") != null);
 }
