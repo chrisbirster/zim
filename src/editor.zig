@@ -581,6 +581,7 @@ pub const Editor = struct {
         const was_ready = self.lsp_state.client.state == .ready;
         try self.lsp_state.handleIncoming(body);
         try self.syncLspDiagnosticExtmarks();
+        try self.syncCompletionPopup();
         if (!was_ready and self.lsp_state.client.state == .ready) {
             for (self.buffers.items) |*buffer| try self.lsp_state.syncBuffer(buffer, false);
         }
@@ -657,6 +658,25 @@ pub const Editor = struct {
 
     pub fn lspCompletionLabel(self: *const Editor, index: usize) ?[]const u8 {
         return self.lsp_state.completionLabel(index);
+    }
+
+    fn syncCompletionPopup(self: *Editor) !void {
+        if (self.completion_generation_seen == self.lsp_state.completion_generation) return;
+        self.completion_generation_seen = self.lsp_state.completion_generation;
+        const completions = self.lsp_state.last_completions orelse {
+            self.popup.close();
+            return;
+        };
+        if (completions.items.len == 0) {
+            self.popup.close();
+            self.setStatus("no completions", .{});
+            return;
+        }
+        const labels = try self.allocator.alloc([]const u8, completions.items.len);
+        defer self.allocator.free(labels);
+        for (completions.items, labels) |item, *label| label.* = item.label;
+        try self.popup.show(.completion, "COMPLETION", labels);
+        self.setStatus("completion: j/k select · Enter accept · Esc close", .{});
     }
 
     fn syncLspDiagnosticExtmarks(self: *Editor) !void {
@@ -788,6 +808,18 @@ pub const Editor = struct {
         const before_buffer_id = self.currentBufferConst().id;
         const before_revision = self.currentBufferConst().revision;
         const key = self.resolveKey(incoming);
+        if (self.popup.open) {
+            const handled = try self.handlePopup(key);
+            if (handled) {
+                const after_window = self.currentWindowConst();
+                const after_buffer = self.currentBufferConst();
+                if (after_window.id != before_window_id or after_buffer.id != before_buffer_id or after_buffer.revision != before_revision) {
+                    try self.syncCurrentLanguage(false);
+                    try self.syncCurrentLsp(false);
+                }
+            }
+            return .{ .handled = handled, .command_open = self.commandOpen(), .quit_requested = self.quit_requested };
+        }
         if (self.recording_macro) |macro_index| {
             const stop_key = self.mode == .normal and switch (key) {
                 .codepoint => |cp| cp == 'q',
@@ -952,6 +984,41 @@ pub const Editor = struct {
         try self.lsp_state.didSave(self.currentBufferConst());
         const path = self.currentBuffer().path.?;
         self.setStatus("wrote {s}", .{path});
+        return true;
+    }
+
+    fn handlePopup(self: *Editor, key: Key) !bool {
+        switch (key) {
+            .escape => self.popup.close(),
+            .up => self.popup.move(-1),
+            .down => self.popup.move(1),
+            .enter => {
+                if (self.popup.kind == .completion) {
+                    if (self.lsp_state.last_completions) |completions| {
+                        if (self.popup.selected < completions.items.len) {
+                            const insert_text = completions.items[self.popup.selected].insert_text;
+                            const buffer = self.currentBuffer();
+                            const cursor_offset = self.cursor();
+                            try buffer.recordUndo(self.allocator, cursor_offset);
+                            try buffer.insertBytesAt(self.allocator, cursor_offset, insert_text);
+                            buffer.markChanged();
+                            self.currentWindow().cursor = cursor_offset + insert_text.len;
+                            self.setStatus("completion: {s}", .{completions.items[self.popup.selected].label});
+                        }
+                    }
+                } else if (self.popup.selectedLabel()) |label| {
+                    self.setStatus("popup: {s}", .{label});
+                }
+                self.popup.close();
+            },
+            .codepoint => |cp| switch (cp) {
+                'j' => self.popup.move(1),
+                'k' => self.popup.move(-1),
+                'q' => self.popup.close(),
+                else => {},
+            },
+            else => {},
+        }
         return true;
     }
 
@@ -3244,4 +3311,23 @@ test "extmarks survive native insert delete undo and redo" {
     editor.setCursor(0);
     _ = try editor.handleKey(.{ .codepoint = 'x' });
     try std.testing.expectEqual(@as(usize, 4), editor.currentBuffer().extmarks.find(ns, id).?.start);
+}
+
+test "LSP completion response opens native popup and acceptance inserts insertText" {
+    var editor = try Editor.init(std.testing.allocator, std.testing.io, "/tmp/completion.zig");
+    defer editor.deinit();
+    try editor.setText("x");
+    const initialize_id = try editor.lspBeginDetachedForCurrent();
+    const initialize_response = try std.fmt.allocPrint(std.testing.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"capabilities\":{{}}}}}}", .{initialize_id});
+    defer std.testing.allocator.free(initialize_response);
+    try editor.lspHandleIncoming(initialize_response);
+    const completion_id = try editor.lspRequestCompletion();
+    const completion_response = try std.fmt.allocPrint(std.testing.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[{{\"label\":\"value\",\"insertText\":\"value()\"}}]}}", .{completion_id});
+    defer std.testing.allocator.free(completion_response);
+    try editor.lspHandleIncoming(completion_response);
+    try std.testing.expect(editor.popup.open);
+    try std.testing.expectEqual(@import("plugin_ui.zig").Kind.completion, editor.popup.kind);
+    _ = try editor.handleKey(.enter);
+    try std.testing.expectEqualStrings("value()x", editor.text());
+    try std.testing.expect(!editor.popup.open);
 }

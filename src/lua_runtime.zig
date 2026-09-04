@@ -58,6 +58,25 @@ const bootstrap =
     \\function zim.pin.move(from_slot, to_slot) return n.pin_move(from_slot, to_slot) end
     \\function zim.pin.jump(slot) return n.pin_jump(slot) end
     \\function zim.pin.list() return n.pin_list() end
+    \\zim.extmark = {}
+    \\function zim.extmark.namespace(name) return n.namespace_create(name) end
+    \\function zim.extmark.namespace_del(namespace) return n.namespace_delete(namespace) end
+    \\function zim.extmark.set(buffer, namespace, line, column, opts)
+    \\  opts = opts or {}
+    \\  return n.extmark_set(buffer, namespace, line, column, opts.end_line, opts.end_column, opts.highlight, opts.sign, opts.virtual_text, opts.right_gravity or 'right', opts.end_right_gravity or 'left')
+    \\end
+    \\function zim.extmark.del(buffer, namespace, id) return n.extmark_delete(buffer, namespace, id) end
+    \\function zim.extmark.clear(buffer, namespace) return n.extmark_clear(buffer, namespace) end
+    \\zim.diagnostic = {}
+    \\function zim.diagnostic.publish(buffer, namespace, items)
+    \\  n.extmark_clear(buffer, namespace)
+    \\  for _, item in ipairs(items or {}) do
+    \\    n.diagnostic_add(buffer, namespace, item.line, item.column or 1, item.end_line or item.line, item.end_column or item.column or 1, item.severity or 'information', item.message or '')
+    \\  end
+    \\end
+    \\zim.ui = {}
+    \\function zim.ui.popup(title, items) return n.popup_open(title, table.unpack(items or {})) end
+    \\function zim.ui.popup_close() return n.popup_close() end
     \\zim.lsp = {}
     \\function zim.lsp.start() return n.lsp('start') end
     \\function zim.lsp.hover() return n.lsp('hover') end
@@ -155,11 +174,19 @@ pub const Runtime = struct {
             .{ .name = "pin_move", .func = zlua.wrap(nativePinMove) },
             .{ .name = "pin_jump", .func = zlua.wrap(nativePinJump) },
             .{ .name = "pin_list", .func = zlua.wrap(nativePinList) },
+            .{ .name = "namespace_create", .func = zlua.wrap(nativeNamespaceCreate) },
+            .{ .name = "namespace_delete", .func = zlua.wrap(nativeNamespaceDelete) },
+            .{ .name = "extmark_set", .func = zlua.wrap(nativeExtmarkSet) },
+            .{ .name = "extmark_delete", .func = zlua.wrap(nativeExtmarkDelete) },
+            .{ .name = "extmark_clear", .func = zlua.wrap(nativeExtmarkClear) },
+            .{ .name = "diagnostic_add", .func = zlua.wrap(nativeDiagnosticAdd) },
+            .{ .name = "popup_open", .func = zlua.wrap(nativePopupOpen) },
+            .{ .name = "popup_close", .func = zlua.wrap(nativePopupClose) },
             .{ .name = "lsp", .func = zlua.wrap(nativeLsp) },
         };
 
         self.lua.createTable(0, 2);
-        _ = self.lua.pushString("0.6.0");
+        _ = self.lua.pushString("0.7.0");
         self.lua.setField(-2, "version");
         self.lua.newLib(&native_fns);
         self.lua.setField(-2, "_native");
@@ -428,6 +455,107 @@ fn nativePinList(lua: *Lua) i32 {
     return 1;
 }
 
+fn nativeNamespaceCreate(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    const id = runtime.api.namespaceCreate(runtime.editor, lua.checkString(1)) catch lua.raiseErrorStr("failed to create namespace", .{});
+    lua.pushInteger(@intCast(id));
+    return 1;
+}
+
+fn nativeNamespaceDelete(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    const id: api_module.NamespaceId = @intCast(lua.toInteger(1) catch lua.raiseErrorStr("namespace must be an integer", .{}));
+    lua.pushBoolean(runtime.api.namespaceDelete(runtime.editor, id));
+    return 1;
+}
+
+fn nativeExtmarkSet(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    const buffer_id: editor_module.BufferId = @intCast(lua.toInteger(1) catch lua.raiseErrorStr("buffer must be an integer handle", .{}));
+    const namespace_id: api_module.NamespaceId = @intCast(lua.toInteger(2) catch lua.raiseErrorStr("namespace must be an integer", .{}));
+    const line: usize = positiveIndex(lua, 3, "line");
+    const column: usize = positiveIndex(lua, 4, "column");
+    const buffer = runtime.editor.bufferByIdConst(buffer_id) orelse lua.raiseErrorStr("invalid buffer handle", .{});
+    const start = byteOffsetForOneBasedPosition(buffer.text.items, line, column);
+    const end = if (lua.getTop() >= 6 and !lua.isNoneOrNil(5) and !lua.isNoneOrNil(6))
+        byteOffsetForOneBasedPosition(buffer.text.items, positiveIndex(lua, 5, "end_line"), positiveIndex(lua, 6, "end_column"))
+    else
+        null;
+    const highlight = optionalString(lua, 7);
+    const sign = optionalString(lua, 8);
+    const virtual_text = optionalString(lua, 9);
+    const right_gravity = gravity(lua, 10, .right);
+    const end_right_gravity = gravity(lua, 11, .left);
+    const id = runtime.api.extmarkSet(runtime.editor, .{ .id = buffer_id }, namespace_id, start, .{
+        .end = end,
+        .right_gravity = right_gravity,
+        .end_right_gravity = end_right_gravity,
+        .highlight = highlight,
+        .sign = sign,
+        .virtual_text = virtual_text,
+    }) catch lua.raiseErrorStr("failed to create extmark", .{});
+    lua.pushInteger(@intCast(id));
+    return 1;
+}
+
+fn nativeExtmarkDelete(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    const buffer_id: editor_module.BufferId = @intCast(lua.toInteger(1) catch lua.raiseErrorStr("buffer must be an integer handle", .{}));
+    const namespace_id: api_module.NamespaceId = @intCast(lua.toInteger(2) catch lua.raiseErrorStr("namespace must be an integer", .{}));
+    const id: api_module.ExtmarkId = @intCast(lua.toInteger(3) catch lua.raiseErrorStr("extmark id must be an integer", .{}));
+    lua.pushBoolean(runtime.api.extmarkDelete(runtime.editor, .{ .id = buffer_id }, namespace_id, id));
+    return 1;
+}
+
+fn nativeExtmarkClear(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    const buffer_id: editor_module.BufferId = @intCast(lua.toInteger(1) catch lua.raiseErrorStr("buffer must be an integer handle", .{}));
+    const namespace_id: api_module.NamespaceId = @intCast(lua.toInteger(2) catch lua.raiseErrorStr("namespace must be an integer", .{}));
+    lua.pushBoolean(runtime.api.extmarkClear(runtime.editor, .{ .id = buffer_id }, namespace_id));
+    return 1;
+}
+
+fn nativeDiagnosticAdd(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    const buffer_id: editor_module.BufferId = @intCast(lua.toInteger(1) catch lua.raiseErrorStr("buffer must be an integer handle", .{}));
+    const namespace_id: api_module.NamespaceId = @intCast(lua.toInteger(2) catch lua.raiseErrorStr("namespace must be an integer", .{}));
+    const buffer = runtime.editor.bufferByIdConst(buffer_id) orelse lua.raiseErrorStr("invalid buffer handle", .{});
+    const start = byteOffsetForOneBasedPosition(buffer.text.items, positiveIndex(lua, 3, "line"), positiveIndex(lua, 4, "column"));
+    const finish = byteOffsetForOneBasedPosition(buffer.text.items, positiveIndex(lua, 5, "end_line"), positiveIndex(lua, 6, "end_column"));
+    const severity = diagnosticSeverity(lua.checkString(7)) orelse lua.raiseErrorStr("invalid diagnostic severity", .{});
+    const message = lua.checkString(8);
+    const visual = diagnosticVisual(severity);
+    _ = runtime.api.extmarkSet(runtime.editor, .{ .id = buffer_id }, namespace_id, start, .{
+        .end = finish,
+        .right_gravity = .left,
+        .end_right_gravity = .right,
+        .highlight = visual.highlight,
+        .sign = visual.sign,
+        .virtual_text = message,
+        .diagnostic_message = message,
+        .diagnostic_severity = severity,
+    }) catch lua.raiseErrorStr("failed to publish diagnostic", .{});
+    return 0;
+}
+
+fn nativePopupOpen(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    const title = lua.checkString(1);
+    const top = lua.getTop();
+    const count: usize = if (top > 1) @intCast(top - 1) else 0;
+    const labels = runtime.allocator.alloc([]const u8, count) catch lua.raiseErrorStr("out of memory", .{});
+    defer runtime.allocator.free(labels);
+    for (labels, 0..) |*label, index| label.* = lua.checkString(@intCast(index + 2));
+    runtime.api.popupOpen(runtime.editor, title, labels) catch lua.raiseErrorStr("failed to open popup", .{});
+    return 0;
+}
+
+fn nativePopupClose(lua: *Lua) i32 {
+    const runtime = runtimeFor(lua);
+    runtime.api.popupClose(runtime.editor);
+    return 0;
+}
+
 fn nativeLsp(lua: *Lua) i32 {
     const runtime = runtimeFor(lua);
     const action = lua.checkString(1);
@@ -527,6 +655,53 @@ fn eventName(kind: api_module.events.Kind) []const u8 {
     };
 }
 
+fn optionalString(lua: *Lua, index: i32) ?[]const u8 {
+    if (lua.getTop() < index or lua.isNoneOrNil(index)) return null;
+    return lua.checkString(index);
+}
+
+fn positiveIndex(lua: *Lua, index: i32, comptime label: []const u8) usize {
+    const value = lua.toInteger(index) catch lua.raiseErrorStr(label ++ " must be an integer", .{});
+    if (value < 1) lua.raiseErrorStr(label ++ " must be >= 1", .{});
+    return @intCast(value);
+}
+
+fn byteOffsetForOneBasedPosition(text: []const u8, line: usize, column: usize) usize {
+    var current_line: usize = 1;
+    var start: usize = 0;
+    while (current_line < line and start < text.len) : (start += 1) {
+        if (text[start] == '\n') current_line += 1;
+    }
+    if (current_line != line) return text.len;
+    var end = start;
+    while (end < text.len and text[end] != '\n') : (end += 1) {}
+    return @min(start + column - 1, end);
+}
+
+fn gravity(lua: *Lua, index: i32, default: api_module.extmarks.Gravity) api_module.extmarks.Gravity {
+    const value = optionalString(lua, index) orelse return default;
+    if (std.mem.eql(u8, value, "left")) return .left;
+    if (std.mem.eql(u8, value, "right")) return .right;
+    lua.raiseErrorStr("gravity must be 'left' or 'right'", .{});
+}
+
+fn diagnosticSeverity(value: []const u8) ?api_module.extmarks.DiagnosticSeverity {
+    if (std.mem.eql(u8, value, "error")) return .error_level;
+    if (std.mem.eql(u8, value, "warning") or std.mem.eql(u8, value, "warn")) return .warning;
+    if (std.mem.eql(u8, value, "information") or std.mem.eql(u8, value, "info")) return .information;
+    if (std.mem.eql(u8, value, "hint")) return .hint;
+    return null;
+}
+
+fn diagnosticVisual(severity: api_module.extmarks.DiagnosticSeverity) struct { highlight: []const u8, sign: []const u8 } {
+    return switch (severity) {
+        .error_level => .{ .highlight = "DiagnosticError", .sign = "E" },
+        .warning => .{ .highlight = "DiagnosticWarn", .sign = "W" },
+        .information => .{ .highlight = "DiagnosticInfo", .sign = "I" },
+        .hint => .{ .highlight = "DiagnosticHint", .sign = "H" },
+    };
+}
+
 fn decodeSingleCodepoint(text: []const u8) !u21 {
     if (text.len == 0) return error.InvalidKey;
     const len = try std.unicode.utf8ByteSequenceLength(text[0]);
@@ -543,7 +718,7 @@ test "embedded Lua exposes options keymaps commands and autocommands" {
     defer runtime.deinit();
 
     try runtime.eval(
-        \\assert(zim.version == '0.6.0')
+        \\assert(zim.version == '0.7.0')
         \\zim.opt.number = true
         \\zim.opt.tabstop = 8
         \\zim.keymap.set('normal', 'z', 'i')
@@ -600,4 +775,27 @@ test "Lua Pins API is backed by the public Zig Pins API" {
     );
     try std.testing.expectEqual(@as(usize, 1), api.pinCount(&editor));
     try std.testing.expectEqual(@as(usize, 2), editor.cursorPosition().line);
+}
+
+test "Lua extmarks diagnostics and popup bind the public Zig API" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    try editor.setText("alpha beta");
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+    var runtime = try Runtime.init(std.testing.allocator, &api, &editor);
+    defer runtime.deinit();
+
+    try runtime.eval(
+        \\local buffer = zim.buf.current()
+        \\local ns = zim.extmark.namespace('lua.demo')
+        \\local id = zim.extmark.set(buffer, ns, 1, 7, { end_line = 1, end_column = 11, highlight = 'Demo', sign = '*', virtual_text = 'lua note' })
+        \\assert(id ~= nil)
+        \\zim.diagnostic.publish(buffer, ns, {{ line = 1, column = 1, end_line = 1, end_column = 6, severity = 'warning', message = 'from lua' }})
+        \\zim.ui.popup('LUA POPUP', {'one', 'two'})
+    );
+    try std.testing.expectEqual(@as(usize, 1), editor.currentBuffer().extmarks.diagnosticCount());
+    try std.testing.expect(editor.popup.open);
+    try std.testing.expectEqualStrings("LUA POPUP", editor.popup.title.items);
+    try std.testing.expectEqual(@as(usize, 2), editor.popup.items.items.len);
 }

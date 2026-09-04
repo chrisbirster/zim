@@ -492,3 +492,45 @@ test "Pins switcher renders in Hondo while navigation stays native" {
         "zim-pin-native-key-proof.js",
     );
 }
+
+test "plugin popup and completion popup render in Hondo while keys stay native" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, "/tmp/popup-demo.zig");
+    defer editor.deinit();
+    try editor.setText("x");
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+    var lua = try lua_runtime.Runtime.init(std.testing.allocator, &api, &editor);
+    defer lua.deinit();
+    try lua.eval("zim.ui.popup('PLUGIN POPUP', {'one', 'two'})");
+
+    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 120, 30);
+    defer app.deinit();
+    const moved = try app.dispatch(.{ .key = .{ .codepoint = 'j' } });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, moved.path);
+    try std.testing.expectEqual(@as(usize, 1), editor.popup.selected);
+    try std.testing.expect(sceneContainsText(app.scene, "PLUGIN POPUP"));
+    _ = try app.dispatch(.{ .key = .escape });
+    try std.testing.expect(!editor.popup.open);
+
+    const initialize_id = try editor.lspBeginDetachedForCurrent();
+    const initialize_response = try std.fmt.allocPrint(std.testing.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"capabilities\":{{}}}}}}", .{initialize_id});
+    defer std.testing.allocator.free(initialize_response);
+    try editor.lspHandleIncoming(initialize_response);
+    const completion_id = try editor.lspRequestCompletion();
+    const completion_response = try std.fmt.allocPrint(std.testing.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[{{\"label\":\"value\",\"detail\":\"const\",\"insertText\":\"value()\"}}]}}", .{completion_id});
+    defer std.testing.allocator.free(completion_response);
+    try editor.lspHandleIncoming(completion_response);
+
+    const completion_move = try app.dispatch(.{ .key = .down });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, completion_move.path);
+    try std.testing.expect(sceneContainsText(app.scene, "COMPLETION"));
+    const accepted = try app.dispatch(.{ .key = .enter });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, accepted.path);
+    try std.testing.expectEqualStrings("value()x", editor.text());
+    try std.testing.expect(!editor.popup.open);
+
+    try app.runtime.eval(
+        "if (globalThis.__zimJsKeyEvents !== 0) throw new Error('popup key crossed into JavaScript');",
+        "zim-popup-native-key-proof.js",
+    );
+}

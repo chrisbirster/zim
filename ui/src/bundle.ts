@@ -35,10 +35,16 @@ const [tabs, setTabs] = createSignal(1);
 const [diagnostics, setDiagnostics] = createSignal(0);
 const [symbols, setSymbols] = createSignal(0);
 type PinView = { id: number; path: string; line: number; column: number; label?: string };
+type NativePopupItem = { label: string; detail?: string };
 const [references, setReferences] = createSignal(0);
 const [pins, setPins] = createSignal<PinView[]>([]);
 const [pinSwitcherOpen, setPinSwitcherOpen] = createSignal(false);
 const [pinSwitcherIndex, setPinSwitcherIndex] = createSignal(0);
+const [nativePopupOpen, setNativePopupOpen] = createSignal(false);
+const [nativePopupKind, setNativePopupKind] = createSignal('plugin');
+const [nativePopupTitle, setNativePopupTitle] = createSignal('');
+const [nativePopupItems, setNativePopupItems] = createSignal<NativePopupItem[]>([]);
+const [nativePopupSelected, setNativePopupSelected] = createSignal(0);
 const [terminalWidth, setTerminalWidth] = createSignal(120);
 const [terminalHeight, setTerminalHeight] = createSignal(30);
 const [projectCollapsed, setProjectCollapsed] = createSignal(false);
@@ -78,6 +84,17 @@ function pinsPayload(value: HondoValue): PinView[] {
       column: item.column,
       label: typeof item.label === 'string' ? item.label : undefined,
     });
+  }
+  return result;
+}
+
+function nativePopupItemsPayload(value: HondoValue): NativePopupItem[] {
+  if (!Array.isArray(value)) return [];
+  const result: NativePopupItem[] = [];
+  for (const candidate of value) {
+    const item = payloadObject(candidate);
+    if (!item || typeof item.label !== 'string') continue;
+    result.push({ label: item.label, detail: typeof item.detail === 'string' ? item.detail : undefined });
   }
   return result;
 }
@@ -156,6 +173,11 @@ function onNativeState(event: HondoNodeEvent): void {
   if (value.pins !== undefined) setPins(pinsPayload(value.pins));
   if (typeof value.pinSwitcherOpen === 'boolean') setPinSwitcherOpen(value.pinSwitcherOpen);
   if (typeof value.pinSwitcherIndex === 'number') setPinSwitcherIndex(value.pinSwitcherIndex);
+  if (typeof value.popupOpen === 'boolean') setNativePopupOpen(value.popupOpen);
+  if (typeof value.popupKind === 'string') setNativePopupKind(value.popupKind);
+  if (typeof value.popupTitle === 'string') setNativePopupTitle(value.popupTitle);
+  if (value.popupItems !== undefined) setNativePopupItems(nativePopupItemsPayload(value.popupItems));
+  if (typeof value.popupSelected === 'number') setNativePopupSelected(value.popupSelected);
   if (typeof value.terminalWidth === 'number') setTerminalWidth(value.terminalWidth);
   if (typeof value.terminalHeight === 'number') setTerminalHeight(value.terminalHeight);
   flush();
@@ -329,10 +351,38 @@ const pinSwitcher = Popup({
   }),
 });
 
+const nativePopup = Popup({
+  get x() {
+    return Math.max(0, Math.floor((terminalWidth() - 58) / 2));
+  },
+  get y() {
+    return Math.max(1, Math.floor((terminalHeight() - Math.min(16, nativePopupItems().length + 5)) / 2));
+  },
+  zIndex: 30,
+  style: { width: 58, paddingX: 1, background: '#20242c' },
+  children: Column({
+    children: [
+      Text({ style: { bold: true, foreground: 'bright-cyan' }, children: () => nativePopupTitle() || nativePopupKind().toUpperCase() }),
+      Text({ style: { dim: true }, children: () => nativePopupKind() === 'completion' ? 'j/k select · Enter accept · Esc close' : 'j/k select · Enter choose · Esc close' }),
+      () => nativePopupItems().map((item, index) =>
+        Text({
+          get style() {
+            return { bold: index === nativePopupSelected(), reverse: index === nativePopupSelected(), foreground: index === nativePopupSelected() ? 'bright-cyan' : 'bright-white' } as const;
+          },
+          get children() {
+            return item.detail ? `${item.label}  ${item.detail}` : item.label;
+          },
+        }),
+      ),
+    ],
+  }),
+});
+
 const disposeRender = render(() =>
   Column({
     style: { minWidth: 1, minHeight: 1, background: '#080b10' },
     children: [
+      () => (nativePopupOpen() ? nativePopup : null),
       () => (pinSwitcherOpen() ? pinSwitcher : null),
       Row({
         style: { height: 1, background: '#161b22' },
