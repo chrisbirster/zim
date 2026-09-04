@@ -20,6 +20,20 @@ jobs:
         with:
           node-version: 22
       - run: python3 scripts/v07_ui_patch.py
+      - name: Normalize Lua multiline bootstrap escapes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/lua_runtime.zig')
+          lines = []
+          single = '    ' + chr(92)
+          double = '    ' + chr(92) * 2
+          for line in p.read_text().splitlines():
+              if line.startswith(single) and not line.startswith(double):
+                  line = double + line[len(single):]
+              lines.append(line)
+          p.write_text('\n'.join(lines) + '\n')
+          PY
       - run: zig fmt src build.zig
       - run: npm install --no-audit --no-fund
       - run: npm run build:ui
