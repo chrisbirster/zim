@@ -17,6 +17,29 @@ jobs:
         with:
           version: 0.16.0
       - run: python3 scripts/v07_core_patch.py
+      - name: Normalize extmark lookup and owned-buffer test
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          for name in ('src/editor.zig', 'src/api/root.zig', 'src/lsp_bridge.zig'):
+              p = Path(name)
+              p.write_text(p.read_text().replace('.extmarks.mark(', '.extmarks.find('))
+
+          p = Path('src/lsp_bridge.zig')
+          text = p.read_text()
+          marker = 'test "workspace edits move extmarks through the buffer primitive"'
+          start = text.index(marker)
+          head, tail = text[:start], text[start:]
+          tail = tail.replace(
+              'var buffer = try buffer_module.Buffer.init(std.testing.allocator, 1, "/tmp/extmark-demo.zig");\n    defer buffer.deinit(std.testing.allocator);',
+              'var buffers = [_]buffer_module.Buffer{try buffer_module.Buffer.init(std.testing.allocator, 1, "/tmp/extmark-demo.zig")};\n    const buffer = &buffers[0];\n    defer buffer.deinit(std.testing.allocator);',
+              1,
+          )
+          tail = tail.replace('try state.syncBuffer(&buffer, false);', 'try state.syncBuffer(buffer, false);', 1)
+          tail = tail.replace('const formatting_id = try state.requestFormatting(&buffer, 4, true);', 'const formatting_id = try state.requestFormatting(buffer, 4, true);', 1)
+          tail = tail.replace('try state.applyPendingWorkspaceEdit((&[_]buffer_module.Buffer{buffer})[0..])', 'try state.applyPendingWorkspaceEdit(&buffers)', 1)
+          p.write_text(head + tail)
+          PY
       - run: zig fmt src build.zig
       - run: zig build test-core -Dheadless-only=true
       - run: |
