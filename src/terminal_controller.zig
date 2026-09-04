@@ -38,7 +38,7 @@ pub const Controller = struct {
 
     pub fn deinit(self: *Controller, api: *api_module.Api) void {
         if (self.registered) _ = api.commandDelete("terminal");
-        if (self.screen_state) |*screen| screen.deinit();
+        if (self.screen_state) |*screen_value| screen_value.deinit();
         self.manager.deinit();
         self.* = undefined;
     }
@@ -58,7 +58,8 @@ pub const Controller = struct {
 
     pub fn screen(self: *const Controller) ?*const terminal_screen.Screen {
         if (!self.isVisible()) return null;
-        return &self.screen_state.?;
+        if (self.screen_state) |*screen_value| return screen_value;
+        return null;
     }
 
     pub fn snapshot(self: *const Controller) ?terminal.Snapshot {
