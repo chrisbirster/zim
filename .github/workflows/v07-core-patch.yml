@@ -1,0 +1,28 @@
+name: v0.7 Extmark core patch
+
+on:
+  push:
+    branches:
+      - feature/v0.7-extmarks-ui
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: python3 scripts/v07_core_patch.py
+      - run: zig fmt src build.zig
+      - run: zig build test-core -Dheadless-only=true
+      - run: |
+          git rm -f .github/workflows/v07-core-patch.yml scripts/v07_core_patch.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src build.zig.zon
+          git commit -m "feat: integrate native extmark core and diagnostics"
+          git push
