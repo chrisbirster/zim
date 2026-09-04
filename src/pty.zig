@@ -240,6 +240,8 @@ fn spawnWindows(
         _ = c.CloseHandle(output_read);
         _ = c.CloseHandle(output_write);
     }
+    var output_mode: c.DWORD = c.PIPE_NOWAIT;
+    if (c.SetNamedPipeHandleState(output_read, &output_mode, null, null) == 0) return error.PtyPipeFailed;
 
     var pseudo_console: c.HPCON = undefined;
     if (c.CreatePseudoConsole(windowsCoord(options.dimensions), input_read, output_write, 0, &pseudo_console) < 0) {
@@ -308,21 +310,15 @@ fn readWindows(handle: c.HANDLE, buffer: []u8) !usize {
     var read_count: c.DWORD = 0;
     const requested: c.DWORD = @intCast(@min(buffer.len, std.math.maxInt(c.DWORD)));
     if (c.ReadFile(handle, buffer.ptr, requested, &read_count, null) == 0) {
-        if (c.GetLastError() == c.ERROR_BROKEN_PIPE) return 0;
+        const code = c.GetLastError();
+        if (code == c.ERROR_BROKEN_PIPE or code == c.ERROR_NO_DATA) return 0;
         return error.PtyReadFailed;
     }
     return read_count;
 }
 
 fn readAvailableWindows(handle: c.HANDLE, buffer: []u8) !usize {
-    var available: c.DWORD = 0;
-    if (c.PeekNamedPipe(handle, null, 0, null, &available, null) == 0) {
-        if (c.GetLastError() == c.ERROR_BROKEN_PIPE) return 0;
-        return error.PtyPollFailed;
-    }
-    if (available == 0) return 0;
-    const count = @min(buffer.len, @as(usize, available));
-    return readWindows(handle, buffer[0..count]);
+    return readWindows(handle, buffer);
 }
 
 fn writeWindows(handle: c.HANDLE, bytes: []const u8) !void {
