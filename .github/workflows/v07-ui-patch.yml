@@ -1,0 +1,34 @@
+name: v0.7 Lua and UI patch
+
+on:
+  push:
+    branches:
+      - feature/v0.7-extmarks-ui
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: python3 scripts/v07_ui_patch.py
+      - run: zig fmt src build.zig
+      - run: npm install --no-audit --no-fund
+      - run: npm run build:ui
+      - run: zig build test-core -Dheadless-only=true
+      - run: zig build test-integration
+      - run: |
+          git rm -f .github/workflows/v07-ui-patch.yml scripts/v07_ui_patch.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src ui build.zig.zon
+          git commit -m "feat: expose extmarks diagnostics and native plugin UI"
+          git push
