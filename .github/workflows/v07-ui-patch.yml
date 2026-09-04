@@ -20,10 +20,11 @@ jobs:
         with:
           node-version: 22
       - run: python3 scripts/v07_ui_patch.py
-      - name: Normalize Lua multiline bootstrap escapes
+      - name: Normalize generated v0.7 source
         run: |
           python3 - <<'PY'
           from pathlib import Path
+
           p = Path('src/lua_runtime.zig')
           lines = []
           single = '    ' + chr(92)
@@ -33,6 +34,11 @@ jobs:
                   line = double + line[len(single):]
               lines.append(line)
           p.write_text('\n'.join(lines) + '\n')
+
+          p = Path('src/editor.zig')
+          text = p.read_text()
+          text = text.replace('const cursor = self.cursor();\n                            try buffer.recordUndo(self.allocator, cursor);\n                            try buffer.insertBytesAt(self.allocator, cursor, insert_text);\n                            buffer.markChanged();\n                            self.currentWindow().cursor = cursor + insert_text.len;', 'const cursor_offset = self.cursor();\n                            try buffer.recordUndo(self.allocator, cursor_offset);\n                            try buffer.insertBytesAt(self.allocator, cursor_offset, insert_text);\n                            buffer.markChanged();\n                            self.currentWindow().cursor = cursor_offset + insert_text.len;', 1)
+          p.write_text(text)
           PY
       - run: zig fmt src build.zig
       - run: npm install --no-audit --no-fund
