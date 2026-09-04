@@ -101,18 +101,33 @@ const Entry = struct {
         return changed;
     }
 
+    fn waitUntilExit(self: *Entry, final_status: Status) !void {
+        while (self.status_value == .running) {
+            _ = self.drainAvailable() catch |err| {
+                self.status_value = .failed;
+                return err;
+            };
+            if (self.session.exited() catch |err| {
+                self.status_value = .failed;
+                return err;
+            }) {
+                _ = self.drainAvailable() catch |err| {
+                    self.status_value = .failed;
+                    return err;
+                };
+                self.status_value = final_status;
+                return;
+            }
+            self.session.io.sleep(.fromMilliseconds(1), .awake) catch |err| {
+                self.status_value = .failed;
+                return err;
+            };
+        }
+    }
+
     fn wait(self: *Entry) !void {
         if (self.status_value != .running) return;
-
-        self.session.wait() catch |err| {
-            self.status_value = .failed;
-            return err;
-        };
-        _ = self.drainAvailable() catch |err| {
-            self.status_value = .failed;
-            return err;
-        };
-        self.status_value = .exited;
+        try self.waitUntilExit(.exited);
     }
 
     fn input(self: *Entry, bytes: []const u8) !void {
@@ -131,9 +146,7 @@ const Entry = struct {
     fn stop(self: *Entry) !bool {
         if (self.status_value != .running) return false;
         try self.session.terminate();
-        try self.session.wait();
-        _ = try self.drainAvailable();
-        self.status_value = .stopped;
+        try self.waitUntilExit(.stopped);
         return true;
     }
 
