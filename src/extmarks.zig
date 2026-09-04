@@ -77,7 +77,7 @@ pub const Registry = struct {
         return false;
     }
 
-    pub fn name(self: *const Registry, id: NamespaceId) ?[]const u8 {
+    pub fn namespaceName(self: *const Registry, id: NamespaceId) ?[]const u8 {
         for (self.entries.items) |entry| if (entry.id == id) return entry.name;
         return null;
     }
@@ -192,7 +192,7 @@ pub const Store = struct {
         return self.marks.items;
     }
 
-    pub fn mark(self: *const Store, namespace_id: NamespaceId, id: ExtmarkId) ?*const Mark {
+    pub fn find(self: *const Store, namespace_id: NamespaceId, id: ExtmarkId) ?*const Mark {
         for (self.marks.items) |*entry| {
             if (entry.namespace_id == namespace_id and entry.id == id) return entry;
         }
@@ -298,10 +298,10 @@ test "extmarks track insertions with gravity and ranges" {
     const range_id = try store.set(1, 1, .{ .end = 5, .right_gravity = .left, .end_right_gravity = .right });
     store.applyEdit(3, 3, 2);
 
-    try std.testing.expectEqual(@as(usize, 3), store.mark(1, left_id).?.start);
-    try std.testing.expectEqual(@as(usize, 5), store.mark(1, right_id).?.start);
-    try std.testing.expectEqual(@as(usize, 1), store.mark(1, range_id).?.start);
-    try std.testing.expectEqual(@as(usize, 7), store.mark(1, range_id).?.end);
+    try std.testing.expectEqual(@as(usize, 3), store.find(1, left_id).?.start);
+    try std.testing.expectEqual(@as(usize, 5), store.find(1, right_id).?.start);
+    try std.testing.expectEqual(@as(usize, 1), store.find(1, range_id).?.start);
+    try std.testing.expectEqual(@as(usize, 7), store.find(1, range_id).?.end);
 }
 
 test "extmarks survive replacement and diagnostics share the primitive" {
@@ -310,7 +310,7 @@ test "extmarks survive replacement and diagnostics share the primitive" {
 
     const id = try store.set(7, 6, .{ .virtual_text = "note" });
     store.applyTextReplacement("hello world", "hello brave world");
-    try std.testing.expectEqual(@as(usize, 12), store.mark(7, id).?.start);
+    try std.testing.expectEqual(@as(usize, 12), store.find(7, id).?.start);
 
     try store.publishDiagnostics(9, &.{.{
         .start = 0,
