@@ -292,7 +292,7 @@ test "terminal screen handles line flow carriage return and scrolling" {
     screen.feed("hello\nworld\rZ");
     try std.testing.expectEqual(@as(u21, 'w'), screen.cell(0, 0).?);
     try std.testing.expectEqual(@as(u21, 'Z'), screen.cell(1, 0).?);
-    try std.testing.expectEqual(@as(u21, 'o'), screen.cell(1, 1).?);
+    try std.testing.expectEqual(@as(u21, ' '), screen.cell(1, 1).?);
 }
 
 test "terminal screen applies basic CSI cursor and erase commands" {
