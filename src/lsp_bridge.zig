@@ -70,6 +70,7 @@ pub const State = struct {
     last_symbols: ?lsp.responses.SymbolList = null,
     last_completions: ?lsp.completion.List = null,
     pending_workspace_edit: ?lsp.workspace_edit.Plan = null,
+    completion_generation: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) State {
         return .{
@@ -199,6 +200,7 @@ pub const State = struct {
             .completion => {
                 if (self.last_completions) |*old| old.deinit();
                 self.last_completions = try lsp.completion.parse(self.allocator, body);
+                self.completion_generation += 1;
             },
         }
     }
@@ -320,8 +322,7 @@ pub const State = struct {
                 const updated = try lsp.workspace_edit.applyTextEdits(self.allocator, buffer.text.items, file_edit.edits.items);
                 defer self.allocator.free(updated);
                 try buffer.recordUndo(self.allocator, 0);
-                buffer.text.items.len = 0;
-                try buffer.text.appendSlice(self.allocator, updated);
+                try buffer.replaceText(self.allocator, updated);
                 buffer.markChanged();
                 changed += 1;
             } else {
@@ -331,8 +332,7 @@ pub const State = struct {
                 if (loaded != .loaded) return error.WorkspaceEditTargetUnavailable;
                 const updated = try lsp.workspace_edit.applyTextEdits(self.allocator, temporary.text.items, file_edit.edits.items);
                 defer self.allocator.free(updated);
-                temporary.text.items.len = 0;
-                try temporary.text.appendSlice(self.allocator, updated);
+                try temporary.replaceText(self.allocator, updated);
                 temporary.markChanged();
                 try temporary.writeToDisk(self.io, self.allocator);
                 changed += 1;
@@ -433,4 +433,27 @@ test "LSP bridge synchronizes buffers and consumes semantic responses" {
     defer std.testing.allocator.free(formatting_response);
     try state.handleIncoming(formatting_response);
     try std.testing.expectEqual(@as(usize, 1), state.pending_workspace_edit.?.files.items.len);
+}
+
+test "workspace edits move extmarks through the buffer primitive" {
+    var buffers = [_]buffer_module.Buffer{try buffer_module.Buffer.init(std.testing.allocator, 1, "/tmp/extmark-demo.zig")};
+    const buffer = &buffers[0];
+    defer buffer.deinit(std.testing.allocator);
+    try buffer.setLoadedText(std.testing.allocator, "const value = 1;\n");
+    const mark_id = try buffer.extmarks.set(1, 6, .{});
+
+    var state = State.init(std.testing.allocator, std.testing.io);
+    defer state.deinit();
+    const initialize_id = try state.beginDetachedForPath("/tmp/extmark-demo.zig", "/tmp");
+    const initialize_response = try std.fmt.allocPrint(std.testing.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"capabilities\":{{}}}}}}", .{initialize_id});
+    defer std.testing.allocator.free(initialize_response);
+    try state.handleIncoming(initialize_response);
+    try state.syncBuffer(buffer, false);
+
+    const formatting_id = try state.requestFormatting(buffer, 4, true);
+    const response = try std.fmt.allocPrint(std.testing.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[{{\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":0,\"character\":0}}}},\"newText\":\"// fmt\\n\"}}]}}", .{formatting_id});
+    defer std.testing.allocator.free(response);
+    try state.handleIncoming(response);
+    try std.testing.expectEqual(@as(usize, 1), try state.applyPendingWorkspaceEdit(&buffers));
+    try std.testing.expectEqual(@as(usize, 13), buffer.extmarks.find(1, mark_id).?.start);
 }

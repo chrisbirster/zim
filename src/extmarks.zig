@@ -179,7 +179,6 @@ pub const Store = struct {
                 removed = true;
                 continue;
             }
-            if (write != @intFromPtr(mark)) {}
             self.marks.items[write] = mark.*;
             write += 1;
         }

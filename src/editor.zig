@@ -4,6 +4,8 @@ const workspace = @import("workspace.zig");
 const language_bridge = @import("language_bridge.zig");
 const lsp_bridge = @import("lsp_bridge.zig");
 const pins_module = @import("pins.zig");
+const extmarks_module = @import("extmarks.zig");
+const plugin_ui = @import("plugin_ui.zig");
 
 pub const Buffer = buffer_module.Buffer;
 pub const BufferId = buffer_module.BufferId;
@@ -165,6 +167,10 @@ pub const Editor = struct {
     language_state: language_bridge.State,
     lsp_state: lsp_bridge.State,
     pins: pins_module.Store,
+    extmark_namespaces: extmarks_module.Registry,
+    lsp_diagnostic_namespace: extmarks_module.NamespaceId = 0,
+    popup: plugin_ui.Model,
+    completion_generation_seen: u64 = 0,
     pin_switcher_open: bool = false,
     pin_switcher_index: usize = 0,
 
@@ -231,8 +237,11 @@ pub const Editor = struct {
             .language_state = try language_bridge.State.init(allocator),
             .lsp_state = lsp_bridge.State.init(allocator, io),
             .pins = pins_module.Store.init(allocator, io),
+            .extmark_namespaces = extmarks_module.Registry.init(allocator),
+            .popup = plugin_ui.Model.init(allocator),
         };
         errdefer self.deinit();
+        self.lsp_diagnostic_namespace = try self.extmark_namespaces.create("zim.lsp.diagnostics");
 
         const buffer_id = self.allocateBufferId();
         try self.buffers.append(allocator, try Buffer.init(allocator, buffer_id, target));
@@ -253,6 +262,8 @@ pub const Editor = struct {
         self.language_state.deinit();
         self.lsp_state.deinit();
         self.pins.deinit();
+        self.extmark_namespaces.deinit();
+        self.popup.deinit();
         self.unnamed_register.deinit(self.allocator);
         for (&self.named_registers) |*register| register.deinit(self.allocator);
         for (&self.numbered_registers) |*register| register.deinit(self.allocator);
@@ -374,6 +385,61 @@ pub const Editor = struct {
 
     pub fn closePinSwitcher(self: *Editor) void {
         self.pin_switcher_open = false;
+    }
+
+    pub fn extmarkNamespaceCreate(self: *Editor, name: []const u8) !extmarks_module.NamespaceId {
+        return self.extmark_namespaces.create(name);
+    }
+
+    pub fn extmarkNamespaceDelete(self: *Editor, namespace_id: extmarks_module.NamespaceId) bool {
+        if (namespace_id == self.lsp_diagnostic_namespace) return false;
+        if (!self.extmark_namespaces.delete(namespace_id)) return false;
+        for (self.buffers.items) |*buffer| _ = buffer.extmarks.clearNamespace(namespace_id);
+        return true;
+    }
+
+    pub fn extmarkSet(
+        self: *Editor,
+        buffer_id: BufferId,
+        namespace_id: extmarks_module.NamespaceId,
+        start: usize,
+        options: extmarks_module.Options,
+    ) !extmarks_module.ExtmarkId {
+        if (!self.extmark_namespaces.contains(namespace_id)) return error.InvalidExtmarkNamespace;
+        const buffer = self.bufferById(buffer_id) orelse return error.InvalidBuffer;
+        const bounded_start = @min(start, buffer.text.items.len);
+        var bounded = options;
+        if (bounded.end) |finish| bounded.end = @min(finish, buffer.text.items.len);
+        return buffer.extmarks.set(namespace_id, bounded_start, bounded);
+    }
+
+    pub fn extmarkDelete(self: *Editor, buffer_id: BufferId, namespace_id: extmarks_module.NamespaceId, id: extmarks_module.ExtmarkId) bool {
+        const buffer = self.bufferById(buffer_id) orelse return false;
+        return buffer.extmarks.remove(namespace_id, id);
+    }
+
+    pub fn extmarkClear(self: *Editor, buffer_id: BufferId, namespace_id: extmarks_module.NamespaceId) bool {
+        const buffer = self.bufferById(buffer_id) orelse return false;
+        return buffer.extmarks.clearNamespace(namespace_id);
+    }
+
+    pub fn publishDiagnostics(
+        self: *Editor,
+        buffer_id: BufferId,
+        namespace_id: extmarks_module.NamespaceId,
+        diagnostics: []const extmarks_module.Diagnostic,
+    ) !void {
+        if (!self.extmark_namespaces.contains(namespace_id)) return error.InvalidExtmarkNamespace;
+        const buffer = self.bufferById(buffer_id) orelse return error.InvalidBuffer;
+        try buffer.extmarks.publishDiagnostics(namespace_id, diagnostics);
+    }
+
+    pub fn popupShow(self: *Editor, kind: plugin_ui.Kind, title: []const u8, labels: []const []const u8) !void {
+        try self.popup.show(kind, title, labels);
+    }
+
+    pub fn popupClose(self: *Editor) void {
+        self.popup.close();
     }
 
     pub fn currentBuffer(self: *Editor) *Buffer {
@@ -514,6 +580,7 @@ pub const Editor = struct {
     pub fn lspHandleIncoming(self: *Editor, body: []const u8) !void {
         const was_ready = self.lsp_state.client.state == .ready;
         try self.lsp_state.handleIncoming(body);
+        try self.syncLspDiagnosticExtmarks();
         if (!was_ready and self.lsp_state.client.state == .ready) {
             for (self.buffers.items) |*buffer| try self.lsp_state.syncBuffer(buffer, false);
         }
@@ -590,6 +657,32 @@ pub const Editor = struct {
 
     pub fn lspCompletionLabel(self: *const Editor, index: usize) ?[]const u8 {
         return self.lsp_state.completionLabel(index);
+    }
+
+    fn syncLspDiagnosticExtmarks(self: *Editor) !void {
+        for (self.buffers.items) |*buffer| {
+            const path = buffer.path orelse continue;
+            const uri = try lsp_bridge.fileUriAlloc(self.allocator, path);
+            defer self.allocator.free(uri);
+            const source = self.lsp_state.diagnostics.itemsFor(uri);
+            const diagnostics = try self.allocator.alloc(extmarks_module.Diagnostic, source.len);
+            defer self.allocator.free(diagnostics);
+            for (source, diagnostics) |item, *target| {
+                const severity: extmarks_module.DiagnosticSeverity = if (item.severity) |value| switch (value) {
+                    .error_level => .error_level,
+                    .warning => .warning,
+                    .information => .information,
+                    .hint => .hint,
+                } else .information;
+                target.* = .{
+                    .start = lsp_bridge.byteOffsetFromProtocolPosition(buffer.text.items, item.range.start),
+                    .end = lsp_bridge.byteOffsetFromProtocolPosition(buffer.text.items, item.range.end),
+                    .severity = severity,
+                    .message = item.message,
+                };
+            }
+            try buffer.extmarks.publishDiagnostics(self.lsp_diagnostic_namespace, diagnostics);
+        }
     }
 
     pub fn lspNextDiagnostic(self: *Editor, forward: bool) !bool {
@@ -1779,13 +1872,7 @@ pub const Editor = struct {
         try self.setRegister(.{ .start = start, .end = end, .kind = range.kind }, .delete);
         self.selected_register = null;
         try self.ensureUndoSnapshot();
-        const old_len = buffer.text.items.len;
-        std.mem.copyForwards(
-            u8,
-            buffer.text.items[start .. old_len - (end - start)],
-            buffer.text.items[end..old_len],
-        );
-        buffer.text.items.len = old_len - (end - start);
+        buffer.deleteBytes(start, end);
         buffer.markChanged();
         self.currentWindow().cursor = @min(start, buffer.text.items.len);
     }
@@ -2467,17 +2554,7 @@ pub const Editor = struct {
 };
 
 fn insertSliceAt(buffer: *Buffer, allocator: std.mem.Allocator, index: usize, bytes: []const u8) !void {
-    if (bytes.len == 0) return;
-    const insertion = @min(index, buffer.text.items.len);
-    const old_len = buffer.text.items.len;
-    try buffer.text.ensureTotalCapacity(allocator, old_len + bytes.len);
-    buffer.text.items.len = old_len + bytes.len;
-    std.mem.copyBackwards(
-        u8,
-        buffer.text.items[insertion + bytes.len ..],
-        buffer.text.items[insertion..old_len],
-    );
-    @memcpy(buffer.text.items[insertion .. insertion + bytes.len], bytes);
+    try buffer.insertBytesAt(allocator, index, bytes);
 }
 
 fn positionForOffset(bytes: []const u8, cursor: usize) Position {
@@ -3144,4 +3221,27 @@ test "native LSP augments editor with diagnostics navigation semantic requests a
     try editor.lspHandleIncoming(formatting_response);
     try std.testing.expectEqual(@as(usize, 1), try editor.lspApplyPendingWorkspaceEdit());
     try std.testing.expect(std.mem.startsWith(u8, editor.text(), "// formatted\n"));
+}
+
+test "extmarks survive native insert delete undo and redo" {
+    var editor = try Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    try editor.setText("abc def");
+    const ns = try editor.extmarkNamespaceCreate("test");
+    const id = try editor.extmarkSet(editor.currentBuffer().id, ns, 4, .{});
+
+    editor.setCursor(0);
+    _ = try editor.handleKey(.{ .codepoint = 'i' });
+    _ = try editor.handleKey(.{ .codepoint = 'X' });
+    _ = try editor.handleKey(.escape);
+    try std.testing.expectEqual(@as(usize, 5), editor.currentBuffer().extmarks.find(ns, id).?.start);
+
+    try std.testing.expect(try editor.undo());
+    try std.testing.expectEqual(@as(usize, 4), editor.currentBuffer().extmarks.find(ns, id).?.start);
+    try std.testing.expect(try editor.redo());
+    try std.testing.expectEqual(@as(usize, 5), editor.currentBuffer().extmarks.find(ns, id).?.start);
+
+    editor.setCursor(0);
+    _ = try editor.handleKey(.{ .codepoint = 'x' });
+    try std.testing.expectEqual(@as(usize, 4), editor.currentBuffer().extmarks.find(ns, id).?.start);
 }

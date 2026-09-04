@@ -3,7 +3,7 @@ const api_module = @import("api.zig");
 const editor_module = @import("editor.zig");
 const lua_runtime = @import("lua_runtime.zig");
 
-pub const zim_version = "0.6.0";
+pub const zim_version = "0.7.0";
 pub const plugin_api_version: u32 = 1;
 
 const manifest_name = "zim-plugin.meta";
@@ -738,6 +738,9 @@ fn capabilitiesSupported(text: []const u8) bool {
         if (std.mem.eql(u8, capability, "buffers")) continue;
         if (std.mem.eql(u8, capability, "lsp")) continue;
         if (std.mem.eql(u8, capability, "pins")) continue;
+        if (std.mem.eql(u8, capability, "extmarks")) continue;
+        if (std.mem.eql(u8, capability, "diagnostics")) continue;
+        if (std.mem.eql(u8, capability, "ui")) continue;
         return false;
     }
     return true;

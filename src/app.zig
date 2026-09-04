@@ -6,7 +6,7 @@ const lua_runtime = @import("lua_runtime.zig");
 const plugin_manager = @import("plugin_manager.zig");
 const tui = @import("tui.zig");
 
-pub const version = "0.6.0";
+pub const version = "0.7.0";
 
 const help_text =
     \\Zim — your new code overlord.
@@ -49,7 +49,7 @@ pub fn run(init: std.process.Init) !u8 {
             defer api.deinit();
             var lua = try lua_runtime.Runtime.init(init.gpa, &api, &state);
             defer lua.deinit();
-            try lua.eval("zim.version = '0.6.0'");
+            try lua.eval("zim.version = '0.7.0'");
 
             var plugins: ?*plugin_manager.Manager = null;
             defer if (plugins) |manager| manager.destroy();
