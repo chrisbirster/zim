@@ -59,9 +59,9 @@ pub const Screen = struct {
         const copy_columns = @min(columns, self.columns);
         const old_row_start = self.rows - copy_rows;
         const new_row_start = rows - copy_rows;
-        for (0..copy_rows) |row| {
-            const old_base = (old_row_start + row) * self.columns;
-            const new_base = (new_row_start + row) * columns;
+        for (0..copy_rows) |row_index| {
+            const old_base = (old_row_start + row_index) * self.columns;
+            const new_base = (new_row_start + row_index) * columns;
             @memcpy(replacement[new_base..][0..copy_columns], self.cells[old_base..][0..copy_columns]);
         }
 
@@ -78,12 +78,12 @@ pub const Screen = struct {
         for (bytes) |byte| self.feedByte(byte);
     }
 
-    pub fn cell(self: *const Screen, row: usize, column: usize) ?u21 {
-        if (row >= self.rows or column >= self.columns) return null;
-        return self.cells[row * self.columns + column];
+    pub fn cell(self: *const Screen, row_index: usize, column: usize) ?u21 {
+        if (row_index >= self.rows or column >= self.columns) return null;
+        return self.cells[row_index * self.columns + column];
     }
 
-    pub fn row(self: *const Screen, index: usize) ?[]const u21 {
+    pub fn rowCells(self: *const Screen, index: usize) ?[]const u21 {
         if (index >= self.rows) return null;
         const start = index * self.columns;
         return self.cells[start .. start + self.columns];
@@ -116,22 +116,28 @@ pub const Screen = struct {
             self.utf8_skip = 0;
         }
 
-        switch (byte) {
-            0x1b => self.state = .escape,
-            '\r' => self.cursor_x = 0,
-            '\n' => self.newLine(),
-            0x08 => self.cursor_x -|= 1,
-            '\t' => {
-                const next = ((self.cursor_x / 8) + 1) * 8;
-                self.cursor_x = @min(next, self.columns - 1);
-            },
-            0x00...0x1f, 0x7f => {},
-            0x20...0x7e => self.put(@intCast(byte)),
-            else => {
-                self.put(0xfffd);
-                self.utf8_skip = utf8ContinuationCount(byte);
-            },
+        if (byte < 0x20 or byte == 0x7f) {
+            switch (byte) {
+                0x1b => self.state = .escape,
+                '\r' => self.cursor_x = 0,
+                '\n' => self.newLine(),
+                0x08 => self.cursor_x -|= 1,
+                '\t' => {
+                    const next = ((self.cursor_x / 8) + 1) * 8;
+                    self.cursor_x = @min(next, self.columns - 1);
+                },
+                else => {},
+            }
+            return;
         }
+
+        if (byte <= 0x7e) {
+            self.put(@intCast(byte));
+            return;
+        }
+
+        self.put(0xfffd);
+        self.utf8_skip = utf8ContinuationCount(byte);
     }
 
     fn feedEscape(self: *Screen, byte: u8) void {
@@ -181,7 +187,7 @@ pub const Screen = struct {
     }
 
     fn resetCsi(self: *Screen) void {
-        @memset(&self.csi_params, 0);
+        @memset(self.csi_params[0..], 0);
         self.csi_count = 0;
         self.csi_value = 0;
         self.csi_has_value = false;
