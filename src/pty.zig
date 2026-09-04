@@ -279,7 +279,7 @@ fn spawnWindows(
     startup.StartupInfo.cb = @sizeOf(c.STARTUPINFOEXW);
     startup.lpAttributeList = attribute_list;
     var process_info = std.mem.zeroes(c.PROCESS_INFORMATION);
-    var command_line = try windowsCommandLineAlloc(allocator, argv);
+    const command_line = try windowsCommandLineAlloc(allocator, argv);
     defer allocator.free(command_line);
 
     if (c.CreateProcessW(
