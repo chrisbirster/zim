@@ -3,6 +3,11 @@ const std = @import("std");
 pub const JobId = u64;
 pub const Stream = enum { stdout, stderr };
 
+const JobPoller = @TypeOf(std.Io.poll(undefined, Stream, .{
+    .stdout = undefined,
+    .stderr = undefined,
+}));
+
 pub const Status = enum {
     running,
     completed,
@@ -28,7 +33,7 @@ const Entry = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
     child: ?std.process.Child,
-    poller: std.Io.Poller(Stream),
+    poller: JobPoller,
     status: Status = .running,
     term: ?std.process.Child.Term = null,
     stdout: std.ArrayList(u8) = .empty,
