@@ -72,7 +72,10 @@ pub const Session = struct {
             .io = io,
             .native = .{
                 .pid = @intCast(pid),
-                .master = .{ .handle = @intCast(master_fd) },
+                .master = .{
+                    .handle = @intCast(master_fd),
+                    .flags = .{ .nonblocking = false },
+                },
             },
         };
     }
