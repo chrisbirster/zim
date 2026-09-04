@@ -27,6 +27,9 @@ const CoarseState = struct {
     tab_count: usize,
     quit_requested: bool,
     status_hash: u64,
+    pins_revision: u64,
+    pin_switcher_open: bool,
+    pin_switcher_index: usize,
 };
 
 const WindowHit = struct {
@@ -136,6 +139,9 @@ fn captureCoarseState(editor: *const editor_module.Editor) CoarseState {
         .tab_count = editor.tabs.items.len,
         .quit_requested = editor.quit_requested,
         .status_hash = hashBytes(editor.status()),
+        .pins_revision = editor.pins.revision,
+        .pin_switcher_open = editor.pin_switcher_open,
+        .pin_switcher_index = editor.pin_switcher_index,
     };
 }
 
@@ -151,7 +157,10 @@ fn shouldPublishKeyState(before: CoarseState, after: CoarseState) bool {
         before.window_count != after.window_count or
         before.tab_count != after.tab_count or
         before.quit_requested != after.quit_requested or
-        before.status_hash != after.status_hash;
+        before.status_hash != after.status_hash or
+        before.pins_revision != after.pins_revision or
+        before.pin_switcher_open != after.pin_switcher_open or
+        before.pin_switcher_index != after.pin_switcher_index;
 }
 
 fn hashBytes(bytes: []const u8) u64 {
@@ -482,14 +491,6 @@ fn publishState(state: *State, context: hondo.native_view.Context) !void {
     const position = state.editor.cursorPosition();
     var command_buffer: [160]u8 = undefined;
     const command = state.editor.commandDisplay(&command_buffer);
-    var command_escaped: [320]u8 = undefined;
-    const safe_command = escapeJson(command, &command_escaped);
-    var status_escaped: [512]u8 = undefined;
-    const safe_status = escapeJson(state.editor.status(), &status_escaped);
-    var path_escaped: [512]u8 = undefined;
-    const safe_path = escapeJson(state.editor.currentPath() orelse "[No Name]", &path_escaped);
-    var project_escaped: [512]u8 = undefined;
-    const safe_project = escapeJson(state.editor.project_root orelse "", &project_escaped);
     const diagnostics = diagnosticCount(state.editor);
     const symbols = if (state.editor.lsp_state.last_symbols) |value| value.items.len else 0;
     const references = if (state.editor.lsp_state.last_locations_are_references)
@@ -497,29 +498,28 @@ fn publishState(state: *State, context: hondo.native_view.Context) !void {
     else
         0;
 
-    var payload_buffer: [2304]u8 = undefined;
-    const payload = try std.fmt.bufPrint(
-        &payload_buffer,
-        "{{\"mode\":\"{s}\",\"line\":{d},\"column\":{d},\"modified\":{},\"revision\":{d},\"commandOpen\":{},\"commandText\":\"{s}\",\"status\":\"{s}\",\"path\":\"{s}\",\"project\":\"{s}\",\"buffers\":{d},\"windows\":{d},\"tabs\":{d},\"diagnostics\":{d},\"symbols\":{d},\"references\":{d}}}",
-        .{
-            state.editor.modeName(),
-            position.line,
-            position.column,
-            state.editor.currentBuffer().modified,
-            state.editor.currentBuffer().revision,
-            state.editor.commandOpen(),
-            safe_command,
-            safe_status,
-            safe_path,
-            safe_project,
-            state.editor.buffers.items.len,
-            state.editor.activeTab().window_ids.items.len,
-            state.editor.tabs.items.len,
-            diagnostics,
-            symbols,
-            references,
-        },
-    );
+    const payload = try std.json.Stringify.valueAlloc(state.editor.allocator, .{
+        .mode = state.editor.modeName(),
+        .line = position.line,
+        .column = position.column,
+        .modified = state.editor.currentBuffer().modified,
+        .revision = state.editor.currentBuffer().revision,
+        .commandOpen = state.editor.commandOpen(),
+        .commandText = command,
+        .status = state.editor.status(),
+        .path = state.editor.currentPath() orelse "[No Name]",
+        .project = state.editor.project_root orelse "",
+        .buffers = state.editor.buffers.items.len,
+        .windows = state.editor.activeTab().window_ids.items.len,
+        .tabs = state.editor.tabs.items.len,
+        .diagnostics = diagnostics,
+        .symbols = symbols,
+        .references = references,
+        .pins = state.editor.pins.entries.items,
+        .pinSwitcherOpen = state.editor.pin_switcher_open,
+        .pinSwitcherIndex = state.editor.pin_switcher_index,
+    }, .{});
+    defer state.editor.allocator.free(payload);
     try context.notify(payload);
 }
 

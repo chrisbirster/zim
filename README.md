@@ -29,6 +29,7 @@ keyboard / terminal
 │ buffers   windows   modes   keymaps  │
 │ commands  undo      marks   events   │
 │ LSP       parsing   search  plugins  │
+│ pins                                 │
 └──────────┬───────────────────────────┘
            │
            ├── embedded Lua 5.4 API
@@ -48,30 +49,87 @@ Lua is the primary configuration and in-process plugin language. External plugin
 
 ## Current status
 
-Zim is a real modal editor under active pre-1.0 development. The current development version is **`v0.5.0 — Zen Workspace`**.
+Zim is a real modal editor under active pre-1.0 development. The current development version is **`v0.6.0 — Pins`**.
 
-`v0.5.0` builds on the programmable core, Lua configuration, and built-in plugin system with:
+`v0.6.0` builds on the Zen Workspace with persistent project navigation:
 
-- a centered editor zone with comfortable breathing space on wide terminals
-- a first-class Project zone on the left
-- a first-class Context zone on the right
-- Hondo-native workspace focus traversal between Project, Editor, and Context
-- collapsible Project and Context rails that remain keyboard-focusable
-- responsive side-rail behavior for narrow terminals
-- Context surfaces for Symbols, Diagnostics, References, Git, Quickfix, and Tests
-- coarse native project/LSP summary state without sending buffer text or editing semantics through JavaScript
-- live diagnostic, symbol, and reference result counts
-- explicit tracking that distinguishes reference results from definition locations
-- integration coverage proving Normal-mode workspace Tab traversal while Insert-mode Tab remains a native editor key
-- the existing direct native EditorView keystroke/render path
+- stable native Pin IDs and an ordered Pins model
+- persisted file path, line, column, and optional label
+- project-relative persistence under Zim's session/config storage
+- immediate persistence across restart
+- missing-target protection instead of silently creating deleted files
+- `:PinAdd`, `:PinRemove`, `:PinMove`, `:PinJump`, and `:PinList`
+- linewise numeric jumps with `'1` through `'9`
+- exact line/column jumps with backtick + `1` through `9`
+- `gp` to open a centered Hondo pin switcher
+- Project-zone summaries for the first nine Pins
+- native switcher navigation with `j`/`k`, arrows, Enter, Esc, and direct `1`–`9`
+- public Zig Pins API plus `zim.pin` Lua bindings
+- a `pins` plugin capability
+- tests proving handled Pin navigation remains on the native Zig/Hondo input path
 - real pinned ZLS 0.16.0 subprocess smoke testing
 - Ubuntu, macOS, and Windows CI
 
 ```text
-ZIM 0.5.0 — YOUR NEW CODE OVERLORD
+ZIM 0.6.0 — YOUR NEW CODE OVERLORD
 ```
 
-See [Zen Workspace](docs/ZEN_WORKSPACE.md) for the workspace model, keyboard behavior, responsive layout, and native-state boundary.
+See [Pins](docs/PINS.md) for persistence, commands, direct jumps, the centered switcher, and Lua usage.
+
+## Pins
+
+Add the current file/cursor location:
+
+```text
+:PinAdd
+```
+
+Add a label:
+
+```text
+:PinAdd parser entry
+```
+
+Open the centered switcher:
+
+```text
+:PinList
+```
+
+or in Normal mode:
+
+```text
+gp
+```
+
+Direct jumps reuse Zim's mark grammar without stealing numeric counts:
+
+```text
+'1   linewise jump to pin 1
+`1   exact line + column jump to pin 1
+```
+
+Manage ordering:
+
+```text
+:PinMove 4 1
+:PinRemove 2
+:PinJump 3
+```
+
+Pins survive restart because they persist file identity and logical location rather than runtime buffer IDs. Files inside the project root are stored project-relative when possible.
+
+Lua exposes the same model:
+
+```lua
+local id = zim.pin.add('parser')
+local pins = zim.pin.list()
+zim.pin.jump(1)
+zim.pin.move(3, 1)
+zim.pin.remove(2)
+```
+
+See [Pins](docs/PINS.md) for the full contract.
 
 ## Zen Workspace
 
@@ -83,7 +141,7 @@ At normal terminal widths, Zim is organized as:
 │ project root │          EditorView          │ Symbols          │
 │ current file │           Zig-native         │ Diagnostics      │
 │ buffers      │                              │ References       │
-│              │                              │ Git / QF / Tests │
+│ pins 1–9     │                              │ Git / QF / Tests │
 └──────────────┴──────────────────────────────┴──────────────────┘
 ```
 
@@ -93,7 +151,9 @@ In Normal mode, `Tab`/`Shift-Tab` traverse workspace focus. When a key belongs t
 
 While a side zone is focused, `c` or `Enter` toggles its collapsed rail. Context uses Left/Right to select a surface. On narrow terminals Context and then Project collapse automatically to small focusable rails instead of disappearing.
 
-The Git, Quickfix, and Tests entries are provider-neutral Context slots in v0.5. They establish the workspace contract without running subprocess-backed tooling on every paint/state update; later job/tooling work can feed them through the same coarse-state boundary.
+Pins are editor-owned state summarized through the same coarse NativeView boundary used by project/LSP state. The centered switcher is Hondo chrome, while its handled navigation keys remain native.
+
+See [Zen Workspace](docs/ZEN_WORKSPACE.md) for the workspace model and native-state boundary.
 
 ## Plugin package management
 
@@ -165,6 +225,8 @@ end, { description = 'Replace the current buffer with command arguments' })
 zim.autocmd.create('BufWritePost', function(ev)
   -- ev.event, ev.sequence, ev.buffer, ev.window, ev.tab
 end)
+
+local pin_id = zim.pin.add('working location')
 ```
 
 The current keymap bridge intentionally starts small: `lhs` and `rhs` are single Unicode codepoints. Richer mapping notation belongs to later extension work.
@@ -211,7 +273,7 @@ zig build run -- .
 zig build run -- --headless
 ```
 
-Headless startup still initializes the public API, plugin manager, installed plugins, and Lua configuration; it simply skips the Hondo TUI.
+Headless startup still initializes the public API, persisted Pins, plugin manager, installed plugins, and Lua configuration; it simply skips the Hondo TUI.
 
 ### Format
 
@@ -225,10 +287,11 @@ zig fmt src build.zig
 zig build test
 ```
 
-CI additionally runs the pure Zig core gate, the real Git-backed plugin package lifecycle test, Hondo integration tests including the Zen workspace focus/native-key contract, the full suite, and the pinned real-ZLS smoke where configured.
+CI additionally runs the pure Zig core gate, Pins persistence/Lua tests, the real Git-backed plugin package lifecycle test, Hondo integration tests including native Pin navigation, the full suite, and the pinned real-ZLS smoke where configured.
 
 ## Read next
 
+- [Pins](docs/PINS.md)
 - [Zen Workspace](docs/ZEN_WORKSPACE.md)
 - [Plugins](docs/PLUGINS.md)
 - [Lua Configuration](docs/LUA_CONFIGURATION.md)

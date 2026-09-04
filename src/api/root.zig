@@ -6,10 +6,12 @@ pub const options = @import("options.zig");
 pub const commands = @import("commands.zig");
 pub const keymaps = @import("keymaps.zig");
 pub const events = @import("events.zig");
+pub const pins = @import("../pins.zig");
 
 pub const BufferHandle = handles.BufferHandle;
 pub const WindowHandle = handles.WindowHandle;
 pub const TabHandle = handles.TabHandle;
+pub const PinId = pins.PinId;
 
 pub const Api = struct {
     allocator: std.mem.Allocator,
@@ -77,6 +79,36 @@ pub const Api = struct {
         _ = self;
         const window = editor.windowByIdConst(handle.id) orelse return null;
         return .{ .id = window.buffer_id };
+    }
+
+    pub fn pinCount(self: *const Api, editor: *const editor_module.Editor) usize {
+        _ = self;
+        return editor.pins.count();
+    }
+
+    pub fn pinEntries(self: *const Api, editor: *const editor_module.Editor) []const pins.Entry {
+        _ = self;
+        return editor.pins.entries.items;
+    }
+
+    pub fn pinAdd(self: *Api, editor: *editor_module.Editor, label: ?[]const u8) !?PinId {
+        _ = self;
+        return editor.pinAddCurrent(label);
+    }
+
+    pub fn pinRemove(self: *Api, editor: *editor_module.Editor, slot: usize) !bool {
+        _ = self;
+        return editor.pinRemoveSlot(slot);
+    }
+
+    pub fn pinMove(self: *Api, editor: *editor_module.Editor, from_slot: usize, to_slot: usize) !bool {
+        _ = self;
+        return editor.pinMoveSlot(from_slot, to_slot);
+    }
+
+    pub fn pinJump(self: *Api, editor: *editor_module.Editor, slot: usize, exact: bool) !bool {
+        _ = self;
+        return editor.pinJumpSlot(slot, exact);
     }
 
     pub fn optionGet(self: *const Api, name: options.Name) options.Value {
