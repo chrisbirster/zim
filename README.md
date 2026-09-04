@@ -2,7 +2,7 @@
 
 **Your new code overlord.**
 
-Zim is a fast, local-first, terminal-only modal programmer's editor written in Zig. It follows the editor fundamentals that make Neovim powerful—buffers, windows, composable modal editing, commands, keymaps, events, a stable extension API, Lua configuration, plugins, and remote automation—without being a Neovim fork or promising Neovim plugin compatibility.
+Zim is a fast, local-first, terminal-only modal programmer's editor written in Zig. It follows the editor fundamentals that make Neovim powerful—buffers, windows, composable modal editing, commands, keymaps, events, a stable extension API, Lua configuration, plugins, jobs, and remote automation—without being a Neovim fork or promising Neovim plugin compatibility.
 
 > THE CODE... IT FILLS ME... IT IS NEAT!
 
@@ -30,6 +30,7 @@ keyboard / terminal
 │ commands  undo      marks    events        │
 │ LSP       parsing   search   plugins       │
 │ pins      extmarks  diagnostics  popup UI  │
+│ jobs      PTY       terminal state         │
 └──────────┬─────────────────────────────────┘
            │
            ├── embedded Lua 5.4 API
@@ -49,31 +50,65 @@ Lua is the primary configuration and in-process plugin language. External plugin
 
 ## Current status
 
-Zim is a real modal editor under active pre-1.0 development. The current development version is **`v0.7.0 — Extmarks + Plugin UI Primitives`**.
+Zim is a real modal editor under active pre-1.0 development. The current development version is **`v0.8.0 — Jobs + Terminal`**.
 
-`v0.7.0` builds durable editor annotations and plugin-facing UI on top of the public Zig API:
+`v0.8.0` adds native process and terminal workflows while preserving Zig ownership of the editor hot path:
 
-- namespace-owned, buffer-attached extmarks with stable IDs
-- ranged extmarks with start/end gravity
-- tracking through native insert/delete, undo/redo, text replacement, formatting, and LSP WorkspaceEdits
-- native anchored highlights, gutter signs, and end-of-line virtual text
-- LSP and plugin diagnostics represented by the same extmark primitive
-- a reserved native LSP diagnostics namespace
-- public Zig namespace/extmark/diagnostics/popup APIs
-- Lua `zim.extmark`, `zim.diagnostic`, and `zim.ui` bindings
-- plugin compatibility capabilities for `extmarks`, `diagnostics`, and `ui`
-- a native popup model whose selection semantics stay in Zig
-- centered Hondo rendering for plugin popups and LSP completion
-- completion acceptance using the LSP item's native `insertText`
-- tests proving popup/completion interaction stays on the native editor input path
+- editor-independent asynchronous `JobManager` with stable IDs and status snapshots
+- argv-based process spawning with explicit cwd/environment/stdin options
+- independently drained, bounded stdout/stderr with live visibility and truncation metadata
+- cancellation/wait lifecycle plus public Zig job APIs
+- built-in `:JobStart`, `:JobStop`, and `:JobList`
+- Lua `zim.job.start/stop/status/stdout/stderr`
+- plugin `jobs` compatibility capability
+- native PTY abstraction with POSIX `forkpty` and Windows ConPTY backends
+- Zig-owned interactive terminal sessions, output buffering, screen state, input, resize, and exit lifecycle
+- `:terminal [command]` with native shell conventions and reattach behavior
+- native terminal keyboard ownership: `Ctrl-C` interrupts the child and `Esc` returns to the editor
+- passive Hondo terminal rendering; Hondo does not own subprocess or terminal-emulator state
 - real pinned ZLS 0.16.0 subprocess smoke testing
 - Ubuntu, macOS, and Windows CI
 
 ```text
-ZIM 0.7.0 — YOUR NEW CODE OVERLORD
+ZIM 0.8.0 — YOUR NEW CODE OVERLORD
 ```
 
-See [Extmarks, Diagnostics, and Plugin UI](docs/EXTMARKS_AND_PLUGIN_UI.md) for the public v0.7 model and Lua examples.
+See [Jobs + Terminal](docs/JOBS_AND_TERMINAL.md) for the v0.8 process, PTY, Lua, and terminal contracts.
+
+## Jobs + Terminal
+
+Start a non-interactive asynchronous job without invoking a shell implicitly:
+
+```text
+:JobStart zig build test
+:JobList
+:JobStop 1
+```
+
+Lua uses the same native job service:
+
+```lua
+local id = zim.job.start({ 'zig', 'build', 'test' })
+local state = zim.job.status(id)
+local stdout = zim.job.stdout(id)
+local stderr = zim.job.stderr(id)
+```
+
+Open an interactive shell:
+
+```text
+:terminal
+```
+
+Or run a command inside a PTY-backed terminal session:
+
+```text
+:terminal zig build test
+```
+
+On POSIX, terminal sessions use `forkpty`; on Windows they use ConPTY. Zig owns process lifetime, PTY I/O, terminal parsing, resize, input, buffering, and cancellation. Hondo only paints the native screen model.
+
+See [Jobs + Terminal](docs/JOBS_AND_TERMINAL.md) for the complete v0.8 behavior and deliberate scope.
 
 ## Extmarks, diagnostics, and plugin UI
 
@@ -118,7 +153,7 @@ zim.ui.popup('Actions', {
 
 Plugins provide popup content, while Zig owns open/closed state and selection. Hondo renders coarse popup state; handled navigation keys remain on the native editor path.
 
-LSP completion now uses the same popup model. Zig owns the completion items and selected index, and accepting an item inserts its LSP `insertText` through the native buffer edit path.
+LSP completion uses the same popup model. Zig owns the completion items and selected index, and accepting an item inserts its LSP `insertText` through the native buffer edit path.
 
 See [Extmarks, Diagnostics, and Plugin UI](docs/EXTMARKS_AND_PLUGIN_UI.md) for gravity, decorations, diagnostics, popup behavior, and deliberate v0.7 limits.
 
@@ -226,7 +261,7 @@ Update, list, or remove plugins:
 
 Package mutations are applied on disk immediately and the resulting exact Git commit is recorded in `plugins.lock`. Restart Zim to load newly installed/updated code or unload removed code.
 
-Plugins are trusted in-process Lua code. Capabilities such as `extmarks`, `diagnostics`, and `ui` are compatibility metadata, not sandbox permissions. Zim does not claim Neovim API/plugin compatibility.
+Plugins are trusted in-process Lua code. Capabilities such as `extmarks`, `diagnostics`, `ui`, and `jobs` are compatibility metadata, not sandbox permissions. Zim does not claim Neovim API/plugin compatibility.
 
 See [Plugins](docs/PLUGINS.md) for package management and plugin authoring, and [Lua Configuration](docs/LUA_CONFIGURATION.md) for the public Lua editor API.
 
@@ -274,6 +309,7 @@ end)
 
 local pin_id = zim.pin.add('working location')
 local annotations = zim.extmark.namespace('annotations')
+local build_job = zim.job.start({ 'zig', 'build', 'test' })
 ```
 
 The current keymap bridge intentionally starts small: `lhs` and `rhs` are single Unicode codepoints. Richer mapping notation belongs to later extension work.
@@ -287,6 +323,7 @@ The current keymap bridge intentionally starts small: `lhs` and `rhs` are single
 - tab pages own window layouts
 - events/autocommands provide extension hooks
 - marks/extmarks and decorations are editor primitives
+- jobs and terminal process state are native editor services
 - Lua is the primary embedded configuration/plugin language
 - one stable editor API is shared by built-ins and extension layers
 - MessagePack-RPC powers future external plugins and automation
@@ -320,7 +357,7 @@ zig build run -- .
 zig build run -- --headless
 ```
 
-Headless startup still initializes the public API, persisted Pins, plugin manager, installed plugins, Lua configuration, extmarks, diagnostics, and popup model; it simply skips the Hondo TUI.
+Headless startup still initializes the public API, job service, persisted Pins, plugin manager, installed plugins, Lua configuration, extmarks, diagnostics, and popup model; it simply skips the Hondo TUI and interactive terminal view.
 
 ### Format
 
@@ -334,10 +371,11 @@ zig fmt src build.zig
 zig build test
 ```
 
-CI additionally runs the pure Zig core gate, Pins persistence/Lua tests, extmark/edit-tracking and plugin UI tests, the real Git-backed plugin package lifecycle test, Hondo integration tests including native Pin and popup/completion navigation, the full suite, and the pinned real-ZLS smoke where configured.
+CI runs the pure Zig core gate, job lifecycle/streaming/cancellation tests, PTY and terminal session/screen/controller tests, Pins persistence/Lua tests, extmark/edit-tracking and plugin UI tests, the real Git-backed plugin package lifecycle test, Hondo integration tests including native Pin and popup/completion navigation, the full suite, and the pinned real-ZLS smoke where configured.
 
 ## Read next
 
+- [Jobs + Terminal](docs/JOBS_AND_TERMINAL.md)
 - [Extmarks, Diagnostics, and Plugin UI](docs/EXTMARKS_AND_PLUGIN_UI.md)
 - [Pins](docs/PINS.md)
 - [Zen Workspace](docs/ZEN_WORKSPACE.md)
