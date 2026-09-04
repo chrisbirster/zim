@@ -18,6 +18,8 @@ pub const Input = enum {
 pub const Options = struct {
     output_limit: usize = 256 * 1024,
     stdin: Input = .ignore,
+    cwd: ?[]const u8 = null,
+    environ_map: ?*const std.process.Environ.Map = null,
 };
 
 pub const Snapshot = struct {
@@ -50,14 +52,15 @@ const Entry = struct {
     allocator: std.mem.Allocator,
     child: std.process.Child,
     future: WorkerFuture,
-    status: Status = .running,
+    future_consumed: bool = false,
+    status_value: std.atomic.Value(Status) = .init(.running),
     term: ?std.process.Child.Term = null,
     stdout_storage: []u8,
     stderr_storage: []u8,
-    stdout_len: usize = 0,
-    stderr_len: usize = 0,
-    stdout_truncated: bool = false,
-    stderr_truncated: bool = false,
+    stdout_len: std.atomic.Value(usize) = .init(0),
+    stderr_len: std.atomic.Value(usize) = .init(0),
+    stdout_truncated: std.atomic.Value(bool) = .init(false),
+    stderr_truncated: std.atomic.Value(bool) = .init(false),
 
     fn spawn(
         allocator: std.mem.Allocator,
@@ -70,6 +73,8 @@ const Entry = struct {
 
         var child = try std.process.spawn(io, .{
             .argv = argv,
+            .cwd = if (options.cwd) |path| .{ .path = path } else .{ .inherit = {} },
+            .environ_map = options.environ_map,
             .stdin = switch (options.stdin) {
                 .ignore => .ignore,
                 .pipe => .pipe,
@@ -100,8 +105,9 @@ const Entry = struct {
     }
 
     fn deinit(self: *Entry) void {
-        if (self.status == .running) {
+        if (!self.future_consumed) {
             _ = self.future.cancel(self.io) catch {};
+            self.future_consumed = true;
         }
         self.allocator.free(self.stdout_storage);
         self.allocator.free(self.stderr_storage);
@@ -110,14 +116,19 @@ const Entry = struct {
 
     fn install(self: *Entry, output: WorkerOutput) void {
         self.term = output.term;
-        self.stdout_len = output.stdout.len;
-        self.stderr_len = output.stderr.len;
-        self.stdout_truncated = output.stdout.truncated;
-        self.stderr_truncated = output.stderr.truncated;
-        self.status = .completed;
+        self.stdout_len.store(output.stdout.len, .release);
+        self.stderr_len.store(output.stderr.len, .release);
+        self.stdout_truncated.store(output.stdout.truncated, .release);
+        self.stderr_truncated.store(output.stderr.truncated, .release);
+        self.status_value.store(.completed, .release);
     }
 
-    fn exitCode(self: *const Entry) ?u8 {
+    fn status(self: *const Entry) Status {
+        return self.status_value.load(.acquire);
+    }
+
+    fn exitCode(self: *const Entry, status_value: Status) ?u8 {
+        if (status_value != .completed) return null;
         const term = self.term orelse return null;
         return switch (term) {
             .exited => |code| code,
@@ -126,19 +137,26 @@ const Entry = struct {
     }
 
     fn snapshot(self: *const Entry) Snapshot {
+        const status_value = self.status();
         return .{
             .id = self.id,
-            .status = self.status,
-            .exit_code = self.exitCode(),
-            .stdout_len = self.stdout_len,
-            .stderr_len = self.stderr_len,
-            .stdout_truncated = self.stdout_truncated,
-            .stderr_truncated = self.stderr_truncated,
+            .status = status_value,
+            .exit_code = self.exitCode(status_value),
+            .stdout_len = self.stdout_len.load(.acquire),
+            .stderr_len = self.stderr_len.load(.acquire),
+            .stdout_truncated = self.stdout_truncated.load(.acquire),
+            .stderr_truncated = self.stderr_truncated.load(.acquire),
         };
     }
 };
 
-fn readCapture(io: std.Io, file: std.Io.File, storage: []u8) !Capture {
+fn readCapture(
+    io: std.Io,
+    file: std.Io.File,
+    storage: []u8,
+    visible_len: *std.atomic.Value(usize),
+    visible_truncated: *std.atomic.Value(bool),
+) !Capture {
     var capture: Capture = .{};
     var scratch: [4096]u8 = undefined;
 
@@ -154,30 +172,47 @@ fn readCapture(io: std.Io, file: std.Io.File, storage: []u8) !Capture {
         if (accepted > 0) {
             @memcpy(storage[capture.len..][0..accepted], scratch[0..accepted]);
             capture.len += accepted;
+            visible_len.store(capture.len, .release);
         }
-        if (accepted != n) capture.truncated = true;
+        if (accepted != n) {
+            capture.truncated = true;
+            visible_truncated.store(true, .release);
+        }
     }
 
     return capture;
 }
 
 fn runJob(entry: *Entry) WorkerResult {
+    const output = runJobInner(entry) catch |err| {
+        if (err != error.Canceled) entry.status_value.store(.failed, .release);
+        return err;
+    };
+    entry.install(output);
+    return output;
+}
+
+fn runJobInner(entry: *Entry) WorkerResult {
     errdefer entry.child.kill(entry.io);
 
     const stdout_file = entry.child.stdout orelse return error.StdoutUnavailable;
     const stderr_file = entry.child.stderr orelse return error.StderrUnavailable;
 
-    var stdout_future = entry.io.async(readCapture, .{
+    var stdout_future = try entry.io.concurrent(readCapture, .{
         entry.io,
         stdout_file,
         entry.stdout_storage,
+        &entry.stdout_len,
+        &entry.stdout_truncated,
     });
     defer _ = stdout_future.cancel(entry.io) catch {};
 
-    var stderr_future = entry.io.async(readCapture, .{
+    var stderr_future = try entry.io.concurrent(readCapture, .{
         entry.io,
         stderr_file,
         entry.stderr_storage,
+        &entry.stderr_len,
+        &entry.stderr_truncated,
     });
     defer _ = stderr_future.cancel(entry.io) catch {};
 
@@ -243,35 +278,43 @@ pub const Manager = struct {
 
     pub fn wait(self: *Manager, id: JobId) !void {
         const entry = self.find(id) orelse return error.UnknownJob;
-        if (entry.status != .running) return;
+        if (entry.future_consumed) return;
 
         const output = entry.future.await(self.io) catch |err| {
-            entry.status = if (err == error.Canceled) .cancelled else .failed;
+            entry.future_consumed = true;
+            if (err == error.Canceled) {
+                entry.status_value.store(.cancelled, .release);
+            } else {
+                entry.status_value.store(.failed, .release);
+            }
             return err;
         };
+        entry.future_consumed = true;
         entry.install(output);
     }
 
     pub fn cancel(self: *Manager, id: JobId) !bool {
         const entry = self.find(id) orelse return error.UnknownJob;
-        if (entry.status != .running) return false;
+        if (entry.status() != .running or entry.future_consumed) return false;
 
         if (entry.future.cancel(self.io)) |output| {
+            entry.future_consumed = true;
             entry.install(output);
             return false;
         } else |err| {
+            entry.future_consumed = true;
             if (err == error.Canceled) {
-                entry.status = .cancelled;
+                entry.status_value.store(.cancelled, .release);
                 return true;
             }
-            entry.status = .failed;
+            entry.status_value.store(.failed, .release);
             return err;
         }
     }
 
     pub fn status(self: *const Manager, id: JobId) ?Status {
         const entry = self.findConst(id) orelse return null;
-        return entry.status;
+        return entry.status();
     }
 
     pub fn snapshot(self: *const Manager, id: JobId) ?Snapshot {
@@ -279,14 +322,21 @@ pub const Manager = struct {
         return entry.snapshot();
     }
 
+    pub fn snapshotAt(self: *const Manager, index: usize) ?Snapshot {
+        if (index >= self.entries.items.len) return null;
+        return self.entries.items[index].snapshot();
+    }
+
     pub fn stdout(self: *const Manager, id: JobId) ?[]const u8 {
         const entry = self.findConst(id) orelse return null;
-        return entry.stdout_storage[0..entry.stdout_len];
+        const len = entry.stdout_len.load(.acquire);
+        return entry.stdout_storage[0..len];
     }
 
     pub fn stderr(self: *const Manager, id: JobId) ?[]const u8 {
         const entry = self.findConst(id) orelse return null;
-        return entry.stderr_storage[0..entry.stderr_len];
+        const len = entry.stderr_len.load(.acquire);
+        return entry.stderr_storage[0..len];
     }
 
     pub fn count(self: *const Manager) usize {
@@ -343,4 +393,29 @@ test "job cancellation interrupts a running child" {
     try std.testing.expect(try manager.cancel(id));
     try std.testing.expectEqual(Status.cancelled, manager.status(id).?);
     try std.testing.expect(!(try manager.cancel(id)));
+}
+
+test "job manager exposes ordered snapshots" {
+    var manager = Manager.init(std.testing.allocator, std.testing.io);
+    defer manager.deinit();
+
+    const first = try manager.start(&.{ "zig", "version" }, .{});
+    const second = try manager.start(&.{ "zig", "version" }, .{});
+    try manager.wait(first);
+    try manager.wait(second);
+
+    try std.testing.expectEqual(first, manager.snapshotAt(0).?.id);
+    try std.testing.expectEqual(second, manager.snapshotAt(1).?.id);
+    try std.testing.expect(manager.snapshotAt(2) == null);
+}
+
+test "job manager applies an explicit working directory" {
+    var manager = Manager.init(std.testing.allocator, std.testing.io);
+    defer manager.deinit();
+
+    var failed = false;
+    _ = manager.start(&.{ "zig", "version" }, .{ .cwd = "__zim_missing_working_directory__" }) catch {
+        failed = true;
+    };
+    try std.testing.expect(failed);
 }

@@ -47,6 +47,7 @@ pub fn run(init: std.process.Init) !u8 {
 
             var api = api_module.Api.init(init.gpa);
             defer api.deinit();
+            try api.registerJobCommands();
             var lua = try lua_runtime.Runtime.init(init.gpa, &api, &state);
             defer lua.deinit();
             try lua.eval("zim.version = '0.7.0'");
