@@ -193,11 +193,7 @@ pub const Session = struct {
 
     pub fn deinit(self: *Session) void {
         if (comptime is_windows) {
-            if (!self.reaped) {
-                self.terminate() catch {};
-                _ = c.WaitForSingleObject(self.native.process, c.INFINITE);
-                self.reaped = true;
-            }
+            if (!self.reaped) self.terminate() catch {};
             if (!self.closed) {
                 _ = c.CloseHandle(self.native.input_write);
                 _ = c.CloseHandle(self.native.output_read);
