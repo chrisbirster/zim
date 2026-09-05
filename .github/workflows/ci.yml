@@ -44,17 +44,17 @@ jobs:
       - name: Test Windows PTY platform boundary
         if: runner.os == 'Windows'
         timeout-minutes: 2
-        run: zig build test-core -Dheadless-only=true -Dcore-test-filter="PTY platform boundary"
+        run: zig build test-pty -Dpty-only=true -Dpty-test-filter="PTY platform boundary"
 
       - name: Test Windows PTY child lifecycle
         if: runner.os == 'Windows'
         timeout-minutes: 2
-        run: zig build test-core -Dheadless-only=true -Dcore-test-filter="PTY runs a child"
+        run: zig build test-pty -Dpty-only=true -Dpty-test-filter="PTY runs a child"
 
       - name: Test Windows PTY nonblocking lifecycle
         if: runner.os == 'Windows'
         timeout-minutes: 2
-        run: zig build test-core -Dheadless-only=true -Dcore-test-filter="PTY exposes nonblocking"
+        run: zig build test-pty -Dpty-only=true -Dpty-test-filter="PTY exposes nonblocking"
 
       - name: Test pure Zig editor/headless core
         run: zig build test-core -Dheadless-only=true
