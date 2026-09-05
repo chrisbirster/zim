@@ -15,10 +15,8 @@ const c = if (is_windows) @cImport({
 });
 
 const WindowsOutputState = if (is_windows) struct {
-    const capacity = 1024 * 1024;
-
     mutex: std.Thread.Mutex = .{},
-    storage: [capacity]u8 = undefined,
+    storage: []u8,
     head: usize = 0,
     len: usize = 0,
     eof: bool = false,
@@ -28,13 +26,13 @@ const WindowsOutputState = if (is_windows) struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        if (bytes.len > capacity - self.len) {
+        if (bytes.len > self.storage.len - self.len) {
             self.failed = true;
             return false;
         }
 
-        const tail = (self.head + self.len) % capacity;
-        const first = @min(bytes.len, capacity - tail);
+        const tail = (self.head + self.len) % self.storage.len;
+        const first = @min(bytes.len, self.storage.len - tail);
         @memcpy(self.storage[tail .. tail + first], bytes[0..first]);
         if (first < bytes.len) {
             @memcpy(self.storage[0 .. bytes.len - first], bytes[first..]);
@@ -51,12 +49,12 @@ const WindowsOutputState = if (is_windows) struct {
         if (self.len == 0) return 0;
 
         const count = @min(buffer.len, self.len);
-        const first = @min(count, capacity - self.head);
+        const first = @min(count, self.storage.len - self.head);
         @memcpy(buffer[0..first], self.storage[self.head .. self.head + first]);
         if (first < count) {
             @memcpy(buffer[first..count], self.storage[0 .. count - first]);
         }
-        self.head = (self.head + count) % capacity;
+        self.head = (self.head + count) % self.storage.len;
         self.len -= count;
         return count;
     }
@@ -257,6 +255,7 @@ pub const Session = struct {
                 _ = c.CancelSynchronousIo(self.native.output_thread.getHandle());
                 self.native.output_thread.join();
                 _ = c.CloseHandle(self.native.output_read);
+                std.heap.page_allocator.free(self.native.output_state.storage);
                 std.heap.page_allocator.destroy(self.native.output_state);
                 self.closed = true;
             }
@@ -367,8 +366,10 @@ fn spawnWindows(
     _ = c.CloseHandle(process_info.hThread);
 
     const output_state = try std.heap.page_allocator.create(WindowsOutputState);
-    output_state.* = .{};
     errdefer std.heap.page_allocator.destroy(output_state);
+    const output_storage = try std.heap.page_allocator.alloc(u8, 1024 * 1024);
+    errdefer std.heap.page_allocator.free(output_storage);
+    output_state.* = .{ .storage = output_storage };
     const output_thread = std.Thread.spawn(.{}, windowsOutputReader, .{ output_state, output_read }) catch {
         return error.PtySpawnFailed;
     };
