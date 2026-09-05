@@ -355,24 +355,29 @@ fn spawnWindows(
     var input_write: windows.HANDLE = undefined;
     if (win.CreatePipe(&input_read, &input_write, null, 0) == 0) return error.PtyPipeFailed;
     var input_read_open = true;
-    errdefer if (input_read_open) _ = win.CloseHandle(input_read);
-    errdefer _ = win.CloseHandle(input_write);
+    var input_write_open = true;
+    errdefer {
+        if (input_read_open) _ = win.CloseHandle(input_read);
+        if (input_write_open) _ = win.CloseHandle(input_write);
+    }
 
     var output_read: windows.HANDLE = undefined;
     var output_write: windows.HANDLE = undefined;
     if (win.CreatePipe(&output_read, &output_write, null, 0) == 0) return error.PtyPipeFailed;
+    var output_read_open = true;
     var output_write_open = true;
-    errdefer _ = win.CloseHandle(output_read);
-    errdefer if (output_write_open) _ = win.CloseHandle(output_write);
+    errdefer {
+        if (output_read_open) _ = win.CloseHandle(output_read);
+        if (output_write_open) _ = win.CloseHandle(output_write);
+    }
 
     var pseudo_console: win.HPCON = undefined;
     if (win.CreatePseudoConsole(windowsCoord(options.dimensions), input_read, output_write, 0, &pseudo_console) < 0) {
         return error.PtySpawnFailed;
     }
+    var pseudo_console_open = true;
     errdefer {
-        _ = win.CloseHandle(input_write);
-        _ = win.CloseHandle(output_read);
-        win.ClosePseudoConsole(pseudo_console);
+        if (pseudo_console_open) win.ClosePseudoConsole(pseudo_console);
     }
 
     _ = win.CloseHandle(input_read);
@@ -432,6 +437,10 @@ fn spawnWindows(
     const output_thread = std.Thread.spawn(.{}, windowsOutputReader, .{ output_state, output_read }) catch {
         return error.PtySpawnFailed;
     };
+
+    input_write_open = false;
+    output_read_open = false;
+    pseudo_console_open = false;
 
     return .{
         .io = io,
