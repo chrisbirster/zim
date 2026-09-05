@@ -2,17 +2,85 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const is_windows = builtin.os.tag == .windows;
-const c = if (is_windows) @cImport({
-    @cDefine("_WIN32_WINNT", "0x0A00");
-    @cDefine("NTDDI_VERSION", "0x0A000006");
-    @cInclude("windows.h");
-    @cInclude("consoleapi.h");
-}) else @cImport({
+const windows = std.os.windows;
+const posix_c = if (is_windows) struct {} else @cImport({
     @cInclude("poll.h");
     @cInclude("sys/ioctl.h");
     @cInclude("sys/wait.h");
     @cInclude("unistd.h");
 });
+
+const win = struct {
+    const HPCON = windows.HANDLE;
+    const STARTUPINFOEXW = extern struct {
+        StartupInfo: windows.STARTUPINFOW,
+        lpAttributeList: ?*anyopaque,
+    };
+    const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
+    const EXTENDED_STARTUPINFO_PRESENT: windows.CreateProcessFlags = @bitCast(@as(windows.DWORD, 0x00080000));
+
+    extern "kernel32" fn CreatePipe(
+        hReadPipe: *windows.HANDLE,
+        hWritePipe: *windows.HANDLE,
+        lpPipeAttributes: ?*const windows.SECURITY_ATTRIBUTES,
+        nSize: windows.DWORD,
+    ) callconv(.winapi) windows.BOOL;
+    extern "kernel32" fn CreatePseudoConsole(
+        size: windows.COORD,
+        hInput: windows.HANDLE,
+        hOutput: windows.HANDLE,
+        flags: windows.DWORD,
+        phPC: *HPCON,
+    ) callconv(.winapi) i32;
+    extern "kernel32" fn ResizePseudoConsole(hPC: HPCON, size: windows.COORD) callconv(.winapi) i32;
+    extern "kernel32" fn ClosePseudoConsole(hPC: HPCON) callconv(.winapi) void;
+    extern "kernel32" fn InitializeProcThreadAttributeList(
+        lpAttributeList: ?*anyopaque,
+        dwAttributeCount: windows.DWORD,
+        dwFlags: windows.DWORD,
+        lpSize: *usize,
+    ) callconv(.winapi) windows.BOOL;
+    extern "kernel32" fn UpdateProcThreadAttribute(
+        lpAttributeList: *anyopaque,
+        dwFlags: windows.DWORD,
+        attribute: usize,
+        lpValue: ?*anyopaque,
+        cbSize: usize,
+        lpPreviousValue: ?*anyopaque,
+        lpReturnSize: ?*usize,
+    ) callconv(.winapi) windows.BOOL;
+    extern "kernel32" fn DeleteProcThreadAttributeList(lpAttributeList: *anyopaque) callconv(.winapi) void;
+    extern "kernel32" fn CreateProcessW(
+        lpApplicationName: ?windows.LPCWSTR,
+        lpCommandLine: ?windows.LPWSTR,
+        lpProcessAttributes: ?*windows.SECURITY_ATTRIBUTES,
+        lpThreadAttributes: ?*windows.SECURITY_ATTRIBUTES,
+        bInheritHandles: windows.BOOL,
+        dwCreationFlags: windows.CreateProcessFlags,
+        lpEnvironment: ?*anyopaque,
+        lpCurrentDirectory: ?windows.LPCWSTR,
+        lpStartupInfo: *windows.STARTUPINFOW,
+        lpProcessInformation: *windows.PROCESS_INFORMATION,
+    ) callconv(.winapi) windows.BOOL;
+    extern "kernel32" fn ReadFile(
+        hFile: windows.HANDLE,
+        lpBuffer: windows.LPVOID,
+        nNumberOfBytesToRead: windows.DWORD,
+        lpNumberOfBytesRead: ?*windows.DWORD,
+        lpOverlapped: ?*windows.OVERLAPPED,
+    ) callconv(.winapi) windows.BOOL;
+    extern "kernel32" fn WriteFile(
+        hFile: windows.HANDLE,
+        lpBuffer: [*]const u8,
+        nNumberOfBytesToWrite: windows.DWORD,
+        lpNumberOfBytesWritten: ?*windows.DWORD,
+        lpOverlapped: ?*windows.OVERLAPPED,
+    ) callconv(.winapi) windows.BOOL;
+    extern "kernel32" fn TerminateProcess(hProcess: windows.HANDLE, uExitCode: windows.UINT) callconv(.winapi) windows.BOOL;
+    extern "kernel32" fn WaitForSingleObject(hHandle: windows.HANDLE, dwMilliseconds: windows.DWORD) callconv(.winapi) windows.DWORD;
+    extern "kernel32" fn CloseHandle(hObject: windows.HANDLE) callconv(.winapi) windows.BOOL;
+    extern "kernel32" fn CancelSynchronousIo(hThread: windows.HANDLE) callconv(.winapi) windows.BOOL;
+};
 
 const WindowsOutputState = if (is_windows) struct {
     mutex: std.Thread.Mutex = .{},
@@ -68,12 +136,12 @@ const WindowsOutputState = if (is_windows) struct {
 } else void;
 
 const Native = if (is_windows) struct {
-    process: c.HANDLE,
-    input_write: c.HANDLE,
-    output_read: c.HANDLE,
+    process: windows.HANDLE,
+    input_write: windows.HANDLE,
+    output_read: windows.HANDLE,
     output_state: *WindowsOutputState,
     output_thread: std.Thread,
-    pseudo_console: c.HPCON,
+    pseudo_console: win.HPCON,
 } else struct {
     pid: std.posix.pid_t,
     master: std.Io.File,
@@ -122,7 +190,7 @@ pub const Session = struct {
         c_argv[argv.len] = null;
 
         var master_fd: c_int = -1;
-        var winsize = c.struct_winsize{
+        var winsize = posix_c.struct_winsize{
             .ws_row = options.dimensions.rows,
             .ws_col = options.dimensions.columns,
             .ws_xpixel = 0,
@@ -131,8 +199,8 @@ pub const Session = struct {
         const pid = forkpty(&master_fd, null, null, &winsize);
         if (pid < 0) return error.PtySpawnFailed;
         if (pid == 0) {
-            _ = c.execvp(c_argv[0].?, @ptrCast(c_argv.ptr));
-            c._exit(127);
+            _ = posix_c.execvp(c_argv[0].?, @ptrCast(c_argv.ptr));
+            posix_c._exit(127);
         }
 
         return .{
@@ -161,15 +229,15 @@ pub const Session = struct {
         if (self.closed or buffer.len == 0) return 0;
         if (comptime is_windows) return self.native.output_state.pop(buffer);
 
-        var descriptor = c.struct_pollfd{
+        var descriptor = posix_c.struct_pollfd{
             .fd = self.native.master.handle,
-            .events = c.POLLIN,
+            .events = posix_c.POLLIN,
             .revents = 0,
         };
-        const ready = c.poll(&descriptor, 1, 0);
+        const ready = posix_c.poll(&descriptor, 1, 0);
         if (ready < 0) return error.PtyPollFailed;
         if (ready == 0) return 0;
-        if ((descriptor.revents & (c.POLLIN | c.POLLHUP)) == 0) return 0;
+        if ((descriptor.revents & (posix_c.POLLIN | posix_c.POLLHUP)) == 0) return 0;
         return self.read(buffer);
     }
 
@@ -182,26 +250,25 @@ pub const Session = struct {
     pub fn resize(self: *Session, dimensions: Dimensions) !void {
         if (self.closed) return error.PtyClosed;
         if (comptime is_windows) {
-            const size = windowsCoord(dimensions);
-            if (c.ResizePseudoConsole(self.native.pseudo_console, size) < 0) return error.PtyResizeFailed;
+            if (win.ResizePseudoConsole(self.native.pseudo_console, windowsCoord(dimensions)) < 0) return error.PtyResizeFailed;
             return;
         }
 
-        var winsize = c.struct_winsize{
+        var winsize = posix_c.struct_winsize{
             .ws_row = dimensions.rows,
             .ws_col = dimensions.columns,
             .ws_xpixel = 0,
             .ws_ypixel = 0,
         };
-        if (c.ioctl(self.native.master.handle, c.TIOCSWINSZ, &winsize) != 0) return error.PtyResizeFailed;
+        if (posix_c.ioctl(self.native.master.handle, posix_c.TIOCSWINSZ, &winsize) != 0) return error.PtyResizeFailed;
     }
 
     pub fn terminate(self: *Session) !void {
         if (self.reaped) return;
         if (comptime is_windows) {
-            if (c.TerminateProcess(self.native.process, 1) == 0) {
-                const code = c.GetLastError();
-                if (code == c.ERROR_ACCESS_DENIED and try self.exited()) return;
+            if (win.TerminateProcess(self.native.process, 1) == 0) {
+                const code = windows.GetLastError();
+                if (code == .ACCESS_DENIED and try self.exited()) return;
                 return error.PtyTerminateFailed;
             }
             return;
@@ -216,17 +283,17 @@ pub const Session = struct {
     pub fn exited(self: *Session) !bool {
         if (self.reaped) return true;
         if (comptime is_windows) {
-            const result = c.WaitForSingleObject(self.native.process, 0);
-            if (result == c.WAIT_OBJECT_0) {
+            const result = win.WaitForSingleObject(self.native.process, 0);
+            if (result == windows.WAIT_OBJECT_0) {
                 self.reaped = true;
                 return true;
             }
-            if (result == c.WAIT_TIMEOUT) return false;
+            if (result == windows.WAIT_TIMEOUT) return false;
             return error.PtyWaitFailed;
         }
 
         var status: c_int = 0;
-        const result = c.waitpid(self.native.pid, &status, c.WNOHANG);
+        const result = posix_c.waitpid(self.native.pid, &status, posix_c.WNOHANG);
         if (result < 0) return error.PtyWaitFailed;
         if (result == 0) return false;
         self.reaped = true;
@@ -236,13 +303,13 @@ pub const Session = struct {
     pub fn wait(self: *Session) !void {
         if (self.reaped) return;
         if (comptime is_windows) {
-            if (c.WaitForSingleObject(self.native.process, c.INFINITE) != c.WAIT_OBJECT_0) return error.PtyWaitFailed;
+            if (win.WaitForSingleObject(self.native.process, windows.INFINITE) != windows.WAIT_OBJECT_0) return error.PtyWaitFailed;
             self.reaped = true;
             return;
         }
 
         var status: c_int = 0;
-        if (c.waitpid(self.native.pid, &status, 0) < 0) return error.PtyWaitFailed;
+        if (posix_c.waitpid(self.native.pid, &status, 0) < 0) return error.PtyWaitFailed;
         self.reaped = true;
     }
 
@@ -250,16 +317,16 @@ pub const Session = struct {
         if (comptime is_windows) {
             if (!self.reaped) self.terminate() catch {};
             if (!self.closed) {
-                _ = c.CloseHandle(self.native.input_write);
-                c.ClosePseudoConsole(self.native.pseudo_console);
-                _ = c.CancelSynchronousIo(self.native.output_thread.getHandle());
+                _ = win.CloseHandle(self.native.input_write);
+                win.ClosePseudoConsole(self.native.pseudo_console);
+                _ = win.CancelSynchronousIo(self.native.output_thread.getHandle());
                 self.native.output_thread.join();
-                _ = c.CloseHandle(self.native.output_read);
+                _ = win.CloseHandle(self.native.output_read);
                 std.heap.page_allocator.free(self.native.output_state.storage);
                 std.heap.page_allocator.destroy(self.native.output_state);
                 self.closed = true;
             }
-            _ = c.CloseHandle(self.native.process);
+            _ = win.CloseHandle(self.native.process);
             self.* = undefined;
             return;
         }
@@ -267,7 +334,7 @@ pub const Session = struct {
         if (!self.reaped) {
             self.terminate() catch {};
             var status: c_int = 0;
-            _ = c.waitpid(self.native.pid, &status, 0);
+            _ = posix_c.waitpid(self.native.pid, &status, 0);
             self.reaped = true;
         }
         if (!self.closed) {
@@ -284,86 +351,78 @@ fn spawnWindows(
     argv: []const []const u8,
     options: SpawnOptions,
 ) !Session {
-    var input_read: c.HANDLE = null;
-    var input_write: c.HANDLE = null;
-    var output_read: c.HANDLE = null;
-    var output_write: c.HANDLE = null;
+    var input_read: windows.HANDLE = undefined;
+    var input_write: windows.HANDLE = undefined;
+    if (win.CreatePipe(&input_read, &input_write, null, 0) == 0) return error.PtyPipeFailed;
+    var input_read_open = true;
+    errdefer if (input_read_open) _ = win.CloseHandle(input_read);
+    errdefer _ = win.CloseHandle(input_write);
 
-    if (c.CreatePipe(&input_read, &input_write, null, 0) == 0) return error.PtyPipeFailed;
-    errdefer {
-        if (input_read != null) _ = c.CloseHandle(input_read);
-        if (input_write != null) _ = c.CloseHandle(input_write);
-    }
-    if (c.CreatePipe(&output_read, &output_write, null, 0) == 0) return error.PtyPipeFailed;
-    errdefer {
-        if (output_read != null) _ = c.CloseHandle(output_read);
-        if (output_write != null) _ = c.CloseHandle(output_write);
-    }
+    var output_read: windows.HANDLE = undefined;
+    var output_write: windows.HANDLE = undefined;
+    if (win.CreatePipe(&output_read, &output_write, null, 0) == 0) return error.PtyPipeFailed;
+    var output_write_open = true;
+    errdefer _ = win.CloseHandle(output_read);
+    errdefer if (output_write_open) _ = win.CloseHandle(output_write);
 
-    var pseudo_console: c.HPCON = undefined;
-    if (c.CreatePseudoConsole(windowsCoord(options.dimensions), input_read, output_write, 0, &pseudo_console) < 0) {
+    var pseudo_console: win.HPCON = undefined;
+    if (win.CreatePseudoConsole(windowsCoord(options.dimensions), input_read, output_write, 0, &pseudo_console) < 0) {
         return error.PtySpawnFailed;
     }
     errdefer {
-        if (input_write != null) {
-            _ = c.CloseHandle(input_write);
-            input_write = null;
-        }
-        if (output_read != null) {
-            _ = c.CloseHandle(output_read);
-            output_read = null;
-        }
-        c.ClosePseudoConsole(pseudo_console);
+        _ = win.CloseHandle(input_write);
+        _ = win.CloseHandle(output_read);
+        win.ClosePseudoConsole(pseudo_console);
     }
 
-    _ = c.CloseHandle(input_read);
-    input_read = null;
-    _ = c.CloseHandle(output_write);
-    output_write = null;
+    _ = win.CloseHandle(input_read);
+    input_read_open = false;
+    _ = win.CloseHandle(output_write);
+    output_write_open = false;
 
-    var attribute_size: c.SIZE_T = 0;
-    _ = c.InitializeProcThreadAttributeList(null, 1, 0, &attribute_size);
+    var attribute_size: usize = 0;
+    _ = win.InitializeProcThreadAttributeList(null, 1, 0, &attribute_size);
     if (attribute_size == 0) return error.PtySpawnFailed;
     const attribute_bytes = try allocator.alignedAlloc(u8, .of(usize), attribute_size);
     defer allocator.free(attribute_bytes);
-    const attribute_list: c.LPPROC_THREAD_ATTRIBUTE_LIST = @ptrCast(@alignCast(attribute_bytes.ptr));
-    if (c.InitializeProcThreadAttributeList(attribute_list, 1, 0, &attribute_size) == 0) return error.PtySpawnFailed;
-    defer c.DeleteProcThreadAttributeList(attribute_list);
+    const attribute_list: *anyopaque = @ptrCast(@alignCast(attribute_bytes.ptr));
+    if (win.InitializeProcThreadAttributeList(attribute_list, 1, 0, &attribute_size) == 0) return error.PtySpawnFailed;
+    defer win.DeleteProcThreadAttributeList(attribute_list);
 
-    if (c.UpdateProcThreadAttribute(
+    if (win.UpdateProcThreadAttribute(
         attribute_list,
         0,
-        c.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+        win.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
         pseudo_console,
-        @sizeOf(c.HPCON),
+        @sizeOf(win.HPCON),
         null,
         null,
     ) == 0) return error.PtySpawnFailed;
 
-    var startup = std.mem.zeroes(c.STARTUPINFOEXW);
-    startup.StartupInfo.cb = @sizeOf(c.STARTUPINFOEXW);
+    var startup = std.mem.zeroes(win.STARTUPINFOEXW);
+    startup.StartupInfo.cb = @sizeOf(win.STARTUPINFOEXW);
     startup.lpAttributeList = attribute_list;
-    var process_info = std.mem.zeroes(c.PROCESS_INFORMATION);
+    var process_info = std.mem.zeroes(windows.PROCESS_INFORMATION);
     const command_line = try windowsCommandLineAlloc(allocator, argv);
     defer allocator.free(command_line);
 
-    if (c.CreateProcessW(
+    if (win.CreateProcessW(
         null,
         command_line.ptr,
         null,
         null,
-        c.FALSE,
-        c.EXTENDED_STARTUPINFO_PRESENT,
+        windows.FALSE,
+        win.EXTENDED_STARTUPINFO_PRESENT,
         null,
         null,
         &startup.StartupInfo,
         &process_info,
     ) == 0) return error.PtySpawnFailed;
     errdefer {
-        _ = c.TerminateProcess(process_info.hProcess, 1);
-        _ = c.CloseHandle(process_info.hProcess);
+        _ = win.TerminateProcess(process_info.hProcess, 1);
+        _ = win.CloseHandle(process_info.hProcess);
     }
-    _ = c.CloseHandle(process_info.hThread);
+    _ = win.CloseHandle(process_info.hThread);
 
     const output_state = try std.heap.page_allocator.create(WindowsOutputState);
     errdefer std.heap.page_allocator.destroy(output_state);
@@ -387,38 +446,36 @@ fn spawnWindows(
     };
 }
 
-fn windowsOutputReader(state: *WindowsOutputState, handle: c.HANDLE) void {
+fn windowsOutputReader(state: *WindowsOutputState, handle: windows.HANDLE) void {
     var buffer: [4096]u8 = undefined;
     while (true) {
-        var read_count: c.DWORD = 0;
-        if (c.ReadFile(handle, &buffer, @intCast(buffer.len), &read_count, null) == 0) {
-            const code = c.GetLastError();
-            state.finish(code != c.ERROR_BROKEN_PIPE and code != c.ERROR_OPERATION_ABORTED);
+        var read_count: windows.DWORD = 0;
+        if (win.ReadFile(handle, @ptrCast(&buffer), @intCast(buffer.len), &read_count, null) == 0) {
+            const code = windows.GetLastError();
+            state.finish(code != .BROKEN_PIPE and code != .OPERATION_ABORTED);
             return;
         }
         if (read_count == 0) {
             state.finish(false);
             return;
         }
-        if (!state.push(buffer[0..read_count])) {
-            return;
-        }
+        if (!state.push(buffer[0..read_count])) return;
     }
 }
 
-fn writeWindows(handle: c.HANDLE, bytes: []const u8) !void {
+fn writeWindows(handle: windows.HANDLE, bytes: []const u8) !void {
     var offset: usize = 0;
     while (offset < bytes.len) {
-        var written: c.DWORD = 0;
-        const count: c.DWORD = @intCast(@min(bytes.len - offset, std.math.maxInt(c.DWORD)));
-        if (c.WriteFile(handle, bytes[offset..].ptr, count, &written, null) == 0) return error.PtyWriteFailed;
+        var written: windows.DWORD = 0;
+        const count: windows.DWORD = @intCast(@min(bytes.len - offset, std.math.maxInt(windows.DWORD)));
+        if (win.WriteFile(handle, bytes[offset..].ptr, count, &written, null) == 0) return error.PtyWriteFailed;
         if (written == 0) return error.PtyWriteFailed;
         offset += written;
     }
 }
 
-fn windowsCoord(dimensions: Dimensions) c.COORD {
-    const max_short: u16 = @intCast(std.math.maxInt(c.SHORT));
+fn windowsCoord(dimensions: Dimensions) windows.COORD {
+    const max_short: u16 = @intCast(std.math.maxInt(i16));
     return .{
         .X = @intCast(@max(@as(u16, 1), @min(dimensions.columns, max_short))),
         .Y = @intCast(@max(@as(u16, 1), @min(dimensions.rows, max_short))),
@@ -473,7 +530,7 @@ extern "c" fn forkpty(
     amaster: *c_int,
     name: ?[*]u8,
     termp: ?*const anyopaque,
-    winp: ?*const if (is_windows) anyopaque else c.struct_winsize,
+    winp: ?*const if (is_windows) anyopaque else posix_c.struct_winsize,
 ) c_int;
 
 fn collectUntilExit(session: *Session, allocator: std.mem.Allocator, output: *std.ArrayList(u8)) !void {
