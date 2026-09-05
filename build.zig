@@ -31,6 +31,11 @@ pub fn build(b: *std.Build) void {
     language_module.addImport("tree-sitter", tree_sitter);
     language_module.linkLibrary(tree_sitter_zig);
 
+    const core_test_filter = b.option(
+        []const u8,
+        "core-test-filter",
+        "Only run core tests whose names contain this substring",
+    );
     const core_test_module = b.createModule(.{
         .root_source_file = b.path("src/core_tests.zig"),
         .target = target,
@@ -41,6 +46,7 @@ pub fn build(b: *std.Build) void {
     core_test_module.addImport("zlua", zlua);
     const core_tests = b.addTest(.{
         .root_module = core_test_module,
+        .filters = if (core_test_filter) |filter| &.{filter} else &.{},
     });
     const run_core_tests = b.addRunArtifact(core_tests);
 
