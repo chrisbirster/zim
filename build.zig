@@ -4,6 +4,35 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const pty_test_filter = b.option(
+        []const u8,
+        "pty-test-filter",
+        "Only run PTY tests whose names contain this substring",
+    );
+    const pty_test_module = b.createModule(.{
+        .root_source_file = b.path("src/pty.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = target.result.os.tag != .windows,
+    });
+    const pty_tests = b.addTest(.{
+        .root_module = pty_test_module,
+        .filters = if (pty_test_filter) |filter| &.{filter} else &.{},
+    });
+    const run_pty_tests = b.addRunArtifact(pty_tests);
+    const pty_test_step = b.step("test-pty", "Run native PTY backend tests");
+    pty_test_step.dependOn(&run_pty_tests.step);
+
+    const pty_only = b.option(
+        bool,
+        "pty-only",
+        "Configure only the native PTY test graph",
+    ) orelse false;
+    if (pty_only) {
+        b.default_step = pty_test_step;
+        return;
+    }
+
     const zlua_dep = b.dependency("zlua", .{
         .target = target,
         .optimize = optimize,
@@ -31,6 +60,11 @@ pub fn build(b: *std.Build) void {
     language_module.addImport("tree-sitter", tree_sitter);
     language_module.linkLibrary(tree_sitter_zig);
 
+    const core_test_filter = b.option(
+        []const u8,
+        "core-test-filter",
+        "Only run core tests whose names contain this substring",
+    );
     const core_test_module = b.createModule(.{
         .root_source_file = b.path("src/core_tests.zig"),
         .target = target,
@@ -41,6 +75,7 @@ pub fn build(b: *std.Build) void {
     core_test_module.addImport("zlua", zlua);
     const core_tests = b.addTest(.{
         .root_module = core_test_module,
+        .filters = if (core_test_filter) |filter| &.{filter} else &.{},
     });
     const run_core_tests = b.addRunArtifact(core_tests);
 

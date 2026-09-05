@@ -4,9 +4,10 @@ const cli = @import("cli.zig");
 const editor = @import("editor.zig");
 const lua_runtime = @import("lua_runtime.zig");
 const plugin_manager = @import("plugin_manager.zig");
+const terminal_controller = @import("terminal_controller.zig");
 const tui = @import("tui.zig");
 
-pub const version = "0.7.0";
+pub const version = "0.8.0";
 
 const help_text =
     \\Zim — your new code overlord.
@@ -47,9 +48,15 @@ pub fn run(init: std.process.Init) !u8 {
 
             var api = api_module.Api.init(init.gpa);
             defer api.deinit();
+            try api.registerJobCommands();
+
+            var terminal = terminal_controller.Controller.init(init.gpa, init.io, init.environ_map);
+            defer terminal.deinit(&api);
+            try terminal.register(&api);
+
             var lua = try lua_runtime.Runtime.init(init.gpa, &api, &state);
             defer lua.deinit();
-            try lua.eval("zim.version = '0.7.0'");
+            try lua.eval("zim.version = '0.8.0'");
 
             var plugins: ?*plugin_manager.Manager = null;
             defer if (plugins) |manager| manager.destroy();
@@ -97,7 +104,7 @@ pub fn run(init: std.process.Init) !u8 {
             }) catch {};
 
             if (options.headless) return 0;
-            return tui.run(init, &state, &api);
+            return tui.run(init, &state, &api, &terminal);
         },
     }
 }

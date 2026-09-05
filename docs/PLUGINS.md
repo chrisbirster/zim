@@ -1,6 +1,6 @@
 # Zim Plugins
 
-Zim v0.4.0 includes a built-in Git-backed package manager for in-process Lua plugins.
+Zim introduced its built-in Git-backed package manager for in-process Lua plugins in v0.4. The extension surface has continued to grow; this document reflects the current v0.8.0 plugin contract.
 
 The design is intentionally small and native:
 
@@ -82,7 +82,7 @@ To install a specific revision, tag, or commit:
 
 `PackAdd` clones the repository, optionally checks out the requested revision in detached mode, reads the resulting Git `HEAD`, and writes that exact SHA to `plugins.lock`.
 
-The new plugin is loaded on the next Zim startup. v0.4 intentionally does not hot-load newly cloned code into a running editor.
+The new plugin is loaded on the next Zim startup. Zim intentionally does not hot-load newly cloned code into a running editor.
 
 ## Updating plugins
 
@@ -159,16 +159,16 @@ version=0.1.0
 zim_api=1
 ```
 
-Expanded manifest:
+Expanded manifest for v0.8:
 
 ```text
 name=git-signs
 version=0.1.0
 zim_api=1
-min_zim=0.4.0
-max_zim=0.6.0
+min_zim=0.8.0
+max_zim=0.8.9
 entry=plugin.lua
-capabilities=commands,keymaps,autocmds,buffers,lsp
+capabilities=commands,keymaps,autocmds,buffers,lsp,pins,extmarks,diagnostics,ui,jobs
 ```
 
 Supported fields:
@@ -177,8 +177,8 @@ Supported fields:
 | --- | --- | --- |
 | `name` | yes | Plugin name. Must match the installed directory name. |
 | `version` | yes | Plugin version in `major.minor.patch` form. |
-| `zim_api` | yes | Plugin API generation. v0.4 supports `1`. |
-| `min_zim` | no | Minimum compatible Zim version. Defaults to the current v0.4 version. |
+| `zim_api` | yes | Plugin API generation. v0.8 supports `1`. |
+| `min_zim` | no | Minimum compatible Zim version. Defaults to the current Zim version. |
 | `max_zim` | no | Maximum compatible Zim version. |
 | `entry` | no | Lua entry file relative to the plugin root. Defaults to `plugin.lua`. |
 | `capabilities` | no | Comma-separated declared capabilities. |
@@ -189,15 +189,22 @@ The entry path must be relative and cannot traverse upward with `..`.
 
 ## Capabilities
 
-v0.4 recognizes these declarations:
+v0.8 recognizes these declarations:
 
 - `commands`
 - `keymaps`
 - `autocmds`
 - `buffers`
 - `lsp`
+- `pins`
+- `extmarks`
+- `diagnostics`
+- `ui`
+- `jobs`
 
-Capabilities are compatibility metadata in v0.4, not a security sandbox. Lua plugins execute in-process and should be treated as trusted code.
+Capabilities are compatibility metadata, not a security sandbox. Lua plugins execute in-process and should be treated as trusted code.
+
+A plugin that starts asynchronous tools through `zim.job` should declare `jobs`. See [Jobs + Terminal](JOBS_AND_TERMINAL.md) for the v0.8 job API and terminal architecture.
 
 ## Writing a plugin
 
@@ -217,7 +224,13 @@ zim.autocmd.create('BufWritePost', function(ev)
 end)
 ```
 
-The complete Lua surface is documented in [Lua Configuration](LUA_CONFIGURATION.md).
+A plugin that needs a build or tool process can use the native asynchronous job service:
+
+```lua
+local id = zim.job.start({ 'zig', 'build', 'test' })
+```
+
+The complete Lua surface is documented in [Lua Configuration](LUA_CONFIGURATION.md), with job-specific behavior in [Jobs + Terminal](JOBS_AND_TERMINAL.md).
 
 ## Lua modules and `require`
 
@@ -272,7 +285,7 @@ One broken plugin does not stop the remaining plugin set from loading.
 
 If a plugin entry throws after registering commands, keymaps, or autocommands, Zim rolls those registrations back before continuing. The failed plugin remains visible through `:PackList` with diagnostic state.
 
-Lua callbacks that fail later during normal editor operation continue to use the protected callback behavior introduced in v0.3; they report an editor status error instead of crashing Zim.
+Lua callbacks that fail later during normal editor operation continue to use protected callback behavior; they report an editor status error instead of crashing Zim.
 
 ## Discovery
 
@@ -284,7 +297,7 @@ Use:
 :Keymaps
 ```
 
-`Commands` lists the public command registry in deterministic name order. `Keymaps` lists the current public keymap registry. Together with `PackList`, these provide the initial v0.4 extension-discovery surface.
+`Commands` lists the public command registry in deterministic name order. `Keymaps` lists the current public keymap registry. Together with `PackList`, these provide the extension-discovery surface.
 
 ## Security model
 
@@ -294,9 +307,9 @@ The package manager avoids shell interpolation when invoking Git, validates plug
 
 Only install plugin repositories you trust.
 
-## Deliberate v0.4 limits
+## Deliberate v0.8 limits
 
-v0.4 does not include:
+v0.8 does not include:
 
 - hot loading/unloading after package mutations
 - a central plugin registry
@@ -304,8 +317,6 @@ v0.4 does not include:
 - semantic-version constraint solving for package installation
 - Neovim API compatibility
 - Neovim plugin compatibility
-- extmarks/plugin UI primitives
-- asynchronous job/terminal APIs
 - MessagePack-RPC remote plugins
 
-Those capabilities belong to later roadmap milestones where appropriate.
+Jobs, extmarks/plugin UI primitives, and the native terminal are now part of the public v0.8 direction while remaining Zim-native rather than Neovim-compatible APIs.

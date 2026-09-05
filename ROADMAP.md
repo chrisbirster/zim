@@ -193,15 +193,36 @@ Validation evidence: implementation preflight head `6a414e981021ccea8dc7dd24a5ff
 
 ## v0.8.0 — Jobs + Terminal
 
-**Goal:** support build/test/tool workflows without leaving Zim.
+**Status: implementation complete; final exact-head validation in progress.**
 
-- [ ] asynchronous jobs
-- [ ] stdout/stderr streaming
-- [ ] cancellation
-- [ ] PTY abstraction
-- [ ] `:terminal`
-- [ ] terminal buffer/view
-- [ ] Lua job API
+**Goal:** support build, test, tool, and interactive shell workflows without leaving Zim while preserving the Zig-native editor hot path.
+
+- [x] native editor-owned asynchronous `JobManager`
+- [x] stable `JobId`/status/snapshot model
+- [x] argv-based process spawning with explicit cwd/environment/stdin options
+- [x] independent stdout/stderr streaming with live visibility
+- [x] bounded output buffering and truncation metadata
+- [x] cancellation, wait, and completed-process cleanup
+- [x] public Zig job start/stop/status/stdout/stderr API
+- [x] built-in `:JobStart`, `:JobStop`, and `:JobList`
+- [x] Lua `zim.job.start/stop/status/stdout/stderr`
+- [x] plugin `jobs` capability metadata
+- [x] PTY abstraction with POSIX `forkpty` backend
+- [x] Windows ConPTY backend
+- [x] native terminal session manager
+- [x] Zig-owned terminal screen state/parser
+- [x] `:terminal [command]` and terminal reattach behavior
+- [x] native terminal input ownership and `Ctrl-C` forwarding
+- [x] terminal resize/input/exit lifecycle
+- [x] passive Hondo rendering of native terminal state
+- [x] job lifecycle/streaming/cancellation tests
+- [x] PTY, terminal session, terminal screen, controller, Lua job, and plugin capability tests
+- [x] coherent 0.8.0 executable/Lua/plugin/build versioning
+- [x] user-facing Jobs + Terminal and updated plugin documentation
+- [ ] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
+- [ ] exact merged-main CI green
+
+**Exit condition:** a Zig or Lua extension can start a tool asynchronously, receive separated stdout/stderr without blocking the editor, inspect or stop it safely, and a user can open an interactive terminal whose process, PTY, input, resize, and rendered state remain owned by native Zim.
 
 ## v0.9.0 — MessagePack-RPC + Remote Plugins
 
