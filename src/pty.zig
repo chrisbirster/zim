@@ -24,7 +24,7 @@ const win = struct {
         hWritePipe: *windows.HANDLE,
         lpPipeAttributes: ?*const windows.SECURITY_ATTRIBUTES,
         nSize: windows.DWORD,
-    ) callconv(.winapi) windows.BOOL;
+    ) callconv(.winapi) c_int;
     extern "kernel32" fn CreatePseudoConsole(
         size: windows.COORD,
         hInput: windows.HANDLE,
@@ -39,7 +39,7 @@ const win = struct {
         dwAttributeCount: windows.DWORD,
         dwFlags: windows.DWORD,
         lpSize: *usize,
-    ) callconv(.winapi) windows.BOOL;
+    ) callconv(.winapi) c_int;
     extern "kernel32" fn UpdateProcThreadAttribute(
         lpAttributeList: *anyopaque,
         dwFlags: windows.DWORD,
@@ -48,38 +48,38 @@ const win = struct {
         cbSize: usize,
         lpPreviousValue: ?*anyopaque,
         lpReturnSize: ?*usize,
-    ) callconv(.winapi) windows.BOOL;
+    ) callconv(.winapi) c_int;
     extern "kernel32" fn DeleteProcThreadAttributeList(lpAttributeList: *anyopaque) callconv(.winapi) void;
     extern "kernel32" fn CreateProcessW(
         lpApplicationName: ?windows.LPCWSTR,
         lpCommandLine: ?windows.LPWSTR,
         lpProcessAttributes: ?*windows.SECURITY_ATTRIBUTES,
         lpThreadAttributes: ?*windows.SECURITY_ATTRIBUTES,
-        bInheritHandles: windows.BOOL,
+        bInheritHandles: c_int,
         dwCreationFlags: windows.CreateProcessFlags,
         lpEnvironment: ?*anyopaque,
         lpCurrentDirectory: ?windows.LPCWSTR,
         lpStartupInfo: *windows.STARTUPINFOW,
         lpProcessInformation: *windows.PROCESS_INFORMATION,
-    ) callconv(.winapi) windows.BOOL;
+    ) callconv(.winapi) c_int;
     extern "kernel32" fn ReadFile(
         hFile: windows.HANDLE,
         lpBuffer: windows.LPVOID,
         nNumberOfBytesToRead: windows.DWORD,
         lpNumberOfBytesRead: ?*windows.DWORD,
         lpOverlapped: ?*windows.OVERLAPPED,
-    ) callconv(.winapi) windows.BOOL;
+    ) callconv(.winapi) c_int;
     extern "kernel32" fn WriteFile(
         hFile: windows.HANDLE,
         lpBuffer: [*]const u8,
         nNumberOfBytesToWrite: windows.DWORD,
         lpNumberOfBytesWritten: ?*windows.DWORD,
         lpOverlapped: ?*windows.OVERLAPPED,
-    ) callconv(.winapi) windows.BOOL;
-    extern "kernel32" fn TerminateProcess(hProcess: windows.HANDLE, uExitCode: windows.UINT) callconv(.winapi) windows.BOOL;
+    ) callconv(.winapi) c_int;
+    extern "kernel32" fn TerminateProcess(hProcess: windows.HANDLE, uExitCode: windows.UINT) callconv(.winapi) c_int;
     extern "kernel32" fn WaitForSingleObject(hHandle: windows.HANDLE, dwMilliseconds: windows.DWORD) callconv(.winapi) windows.DWORD;
-    extern "kernel32" fn CloseHandle(hObject: windows.HANDLE) callconv(.winapi) windows.BOOL;
-    extern "kernel32" fn CancelSynchronousIo(hThread: windows.HANDLE) callconv(.winapi) windows.BOOL;
+    extern "kernel32" fn CloseHandle(hObject: windows.HANDLE) callconv(.winapi) c_int;
+    extern "kernel32" fn CancelSynchronousIo(hThread: windows.HANDLE) callconv(.winapi) c_int;
 };
 
 const WindowsOutputState = if (is_windows) struct {
@@ -416,7 +416,7 @@ fn spawnWindows(
         command_line.ptr,
         null,
         null,
-        windows.FALSE,
+        0,
         win.EXTENDED_STARTUPINFO_PRESENT,
         null,
         null,
