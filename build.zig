@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/pty.zig"),
         .target = target,
         .optimize = optimize,
-        .link_libc = true,
+        .link_libc = target.result.os.tag != .windows,
     });
     const pty_tests = b.addTest(.{
         .root_module = pty_test_module,
