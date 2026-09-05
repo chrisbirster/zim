@@ -41,6 +41,11 @@ jobs:
       - name: Check Zig formatting
         run: zig fmt --check src build.zig
 
+      - name: Test Windows PTY core
+        if: runner.os == 'Windows'
+        timeout-minutes: 5
+        run: zig build test-core -Dheadless-only=true -Dcore-test-filter=PTY
+
       - name: Test pure Zig editor/headless core
         run: zig build test-core -Dheadless-only=true
 
