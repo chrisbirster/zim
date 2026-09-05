@@ -14,12 +14,67 @@ const c = if (is_windows) @cImport({
     @cInclude("unistd.h");
 });
 
-var windows_pipe_counter = std.atomic.Value(u64).init(1);
+const WindowsOutputState = if (is_windows) struct {
+    const capacity = 1024 * 1024;
+
+    mutex: std.Thread.Mutex = .{},
+    storage: [capacity]u8 = undefined,
+    head: usize = 0,
+    len: usize = 0,
+    eof: bool = false,
+    failed: bool = false,
+
+    fn push(self: *@This(), bytes: []const u8) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (bytes.len > capacity - self.len) {
+            self.failed = true;
+            return false;
+        }
+
+        const tail = (self.head + self.len) % capacity;
+        const first = @min(bytes.len, capacity - tail);
+        @memcpy(self.storage[tail .. tail + first], bytes[0..first]);
+        if (first < bytes.len) {
+            @memcpy(self.storage[0 .. bytes.len - first], bytes[first..]);
+        }
+        self.len += bytes.len;
+        return true;
+    }
+
+    fn pop(self: *@This(), buffer: []u8) !usize {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.failed) return error.PtyReadFailed;
+        if (self.len == 0) return 0;
+
+        const count = @min(buffer.len, self.len);
+        const first = @min(count, capacity - self.head);
+        @memcpy(buffer[0..first], self.storage[self.head .. self.head + first]);
+        if (first < count) {
+            @memcpy(buffer[first..count], self.storage[0 .. count - first]);
+        }
+        self.head = (self.head + count) % capacity;
+        self.len -= count;
+        return count;
+    }
+
+    fn finish(self: *@This(), failed: bool) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.eof = true;
+        if (failed) self.failed = true;
+    }
+} else void;
 
 const Native = if (is_windows) struct {
     process: c.HANDLE,
     input_write: c.HANDLE,
     output_read: c.HANDLE,
+    output_state: *WindowsOutputState,
+    output_thread: std.Thread,
     pseudo_console: c.HPCON,
 } else struct {
     pid: std.posix.pid_t,
@@ -96,7 +151,7 @@ pub const Session = struct {
 
     pub fn read(self: *Session, buffer: []u8) !usize {
         if (self.closed or buffer.len == 0) return 0;
-        if (comptime is_windows) return readWindows(self.native.output_read, buffer);
+        if (comptime is_windows) return self.native.output_state.pop(buffer);
         return self.native.master.readStreaming(self.io, &.{buffer}) catch |err| switch (err) {
             error.EndOfStream => 0,
             error.InputOutput => 0,
@@ -106,7 +161,7 @@ pub const Session = struct {
 
     pub fn readAvailable(self: *Session, buffer: []u8) !usize {
         if (self.closed or buffer.len == 0) return 0;
-        if (comptime is_windows) return readAvailableWindows(self.native.output_read, buffer);
+        if (comptime is_windows) return self.native.output_state.pop(buffer);
 
         var descriptor = c.struct_pollfd{
             .fd = self.native.master.handle,
@@ -198,8 +253,11 @@ pub const Session = struct {
             if (!self.reaped) self.terminate() catch {};
             if (!self.closed) {
                 _ = c.CloseHandle(self.native.input_write);
-                _ = c.CloseHandle(self.native.output_read);
                 c.ClosePseudoConsole(self.native.pseudo_console);
+                _ = c.CancelSynchronousIo(self.native.output_thread.getHandle());
+                self.native.output_thread.join();
+                _ = c.CloseHandle(self.native.output_read);
+                std.heap.page_allocator.destroy(self.native.output_state);
                 self.closed = true;
             }
             _ = c.CloseHandle(self.native.process);
@@ -221,55 +279,6 @@ pub const Session = struct {
     }
 };
 
-const WindowsOutputPipe = struct {
-    read: c.HANDLE,
-    write: c.HANDLE,
-};
-
-fn createWindowsOutputPipe(allocator: std.mem.Allocator) !WindowsOutputPipe {
-    const sequence = windows_pipe_counter.fetchAdd(1, .monotonic);
-    const name_utf8 = try std.fmt.allocPrint(
-        allocator,
-        "\\\\.\\pipe\\zim-conpty-{d}-{d}",
-        .{ c.GetCurrentProcessId(), sequence },
-    );
-    defer allocator.free(name_utf8);
-    const name = try std.unicode.utf8ToUtf16LeAllocZ(allocator, name_utf8);
-    defer allocator.free(name);
-
-    const read_handle = c.CreateNamedPipeW(
-        name.ptr,
-        c.PIPE_ACCESS_INBOUND,
-        c.PIPE_TYPE_BYTE | c.PIPE_READMODE_BYTE | c.PIPE_NOWAIT,
-        1,
-        4096,
-        4096,
-        0,
-        null,
-    );
-    if (read_handle == c.INVALID_HANDLE_VALUE) return error.PtyPipeFailed;
-    errdefer _ = c.CloseHandle(read_handle);
-
-    const write_handle = c.CreateFileW(
-        name.ptr,
-        c.GENERIC_WRITE,
-        0,
-        null,
-        c.OPEN_EXISTING,
-        0,
-        null,
-    );
-    if (write_handle == c.INVALID_HANDLE_VALUE) return error.PtyPipeFailed;
-    errdefer _ = c.CloseHandle(write_handle);
-
-    if (c.ConnectNamedPipe(read_handle, null) == 0) {
-        const code = c.GetLastError();
-        if (code != c.ERROR_PIPE_CONNECTED) return error.PtyPipeFailed;
-    }
-
-    return .{ .read = read_handle, .write = write_handle };
-}
-
 fn spawnWindows(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -278,35 +287,40 @@ fn spawnWindows(
 ) !Session {
     var input_read: c.HANDLE = null;
     var input_write: c.HANDLE = null;
+    var output_read: c.HANDLE = null;
+    var output_write: c.HANDLE = null;
 
     if (c.CreatePipe(&input_read, &input_write, null, 0) == 0) return error.PtyPipeFailed;
     errdefer {
-        _ = c.CloseHandle(input_read);
-        _ = c.CloseHandle(input_write);
+        if (input_read != null) _ = c.CloseHandle(input_read);
+        if (input_write != null) _ = c.CloseHandle(input_write);
     }
-
-    var output = try createWindowsOutputPipe(allocator);
+    if (c.CreatePipe(&output_read, &output_write, null, 0) == 0) return error.PtyPipeFailed;
     errdefer {
-        _ = c.CloseHandle(output.read);
-        _ = c.CloseHandle(output.write);
+        if (output_read != null) _ = c.CloseHandle(output_read);
+        if (output_write != null) _ = c.CloseHandle(output_write);
     }
 
     var pseudo_console: c.HPCON = undefined;
-    if (c.CreatePseudoConsole(windowsCoord(options.dimensions), input_read, output.write, 0, &pseudo_console) < 0) {
+    if (c.CreatePseudoConsole(windowsCoord(options.dimensions), input_read, output_write, 0, &pseudo_console) < 0) {
         return error.PtySpawnFailed;
     }
     errdefer {
-        _ = c.CloseHandle(input_write);
-        input_write = null;
-        _ = c.CloseHandle(output.read);
-        output.read = null;
+        if (input_write != null) {
+            _ = c.CloseHandle(input_write);
+            input_write = null;
+        }
+        if (output_read != null) {
+            _ = c.CloseHandle(output_read);
+            output_read = null;
+        }
         c.ClosePseudoConsole(pseudo_console);
     }
 
     _ = c.CloseHandle(input_read);
     input_read = null;
-    _ = c.CloseHandle(output.write);
-    output.write = null;
+    _ = c.CloseHandle(output_write);
+    output_write = null;
 
     var attribute_size: c.SIZE_T = 0;
     _ = c.InitializeProcThreadAttributeList(null, 1, 0, &attribute_size);
@@ -346,33 +360,49 @@ fn spawnWindows(
         &startup.StartupInfo,
         &process_info,
     ) == 0) return error.PtySpawnFailed;
-    errdefer _ = c.CloseHandle(process_info.hProcess);
+    errdefer {
+        _ = c.TerminateProcess(process_info.hProcess, 1);
+        _ = c.CloseHandle(process_info.hProcess);
+    }
     _ = c.CloseHandle(process_info.hThread);
+
+    const output_state = try std.heap.page_allocator.create(WindowsOutputState);
+    output_state.* = .{};
+    errdefer std.heap.page_allocator.destroy(output_state);
+    const output_thread = std.Thread.spawn(.{}, windowsOutputReader, .{ output_state, output_read }) catch {
+        return error.PtySpawnFailed;
+    };
 
     return .{
         .io = io,
         .native = .{
             .process = process_info.hProcess,
             .input_write = input_write,
-            .output_read = output.read,
+            .output_read = output_read,
+            .output_state = output_state,
+            .output_thread = output_thread,
             .pseudo_console = pseudo_console,
         },
     };
 }
 
-fn readWindows(handle: c.HANDLE, buffer: []u8) !usize {
-    var read_count: c.DWORD = 0;
-    const requested: c.DWORD = @intCast(@min(buffer.len, std.math.maxInt(c.DWORD)));
-    if (c.ReadFile(handle, buffer.ptr, requested, &read_count, null) == 0) {
-        const code = c.GetLastError();
-        if (code == c.ERROR_BROKEN_PIPE or code == c.ERROR_NO_DATA) return 0;
-        return error.PtyReadFailed;
+fn windowsOutputReader(state: *WindowsOutputState, handle: c.HANDLE) void {
+    var buffer: [4096]u8 = undefined;
+    while (true) {
+        var read_count: c.DWORD = 0;
+        if (c.ReadFile(handle, &buffer, @intCast(buffer.len), &read_count, null) == 0) {
+            const code = c.GetLastError();
+            state.finish(code != c.ERROR_BROKEN_PIPE and code != c.ERROR_OPERATION_ABORTED);
+            return;
+        }
+        if (read_count == 0) {
+            state.finish(false);
+            return;
+        }
+        if (!state.push(buffer[0..read_count])) {
+            return;
+        }
     }
-    return read_count;
-}
-
-fn readAvailableWindows(handle: c.HANDLE, buffer: []u8) !usize {
-    return readWindows(handle, buffer);
 }
 
 fn writeWindows(handle: c.HANDLE, bytes: []const u8) !void {
