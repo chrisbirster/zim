@@ -16,6 +16,12 @@ const win = struct {
         StartupInfo: windows.STARTUPINFOW,
         lpAttributeList: ?*anyopaque,
     };
+    const PROCESS_INFORMATION = extern struct {
+        hProcess: windows.HANDLE,
+        hThread: windows.HANDLE,
+        dwProcessId: windows.DWORD,
+        dwThreadId: windows.DWORD,
+    };
     const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
     const EXTENDED_STARTUPINFO_PRESENT: windows.CreateProcessFlags = @bitCast(@as(windows.DWORD, 0x00080000));
 
@@ -60,7 +66,7 @@ const win = struct {
         lpEnvironment: ?*anyopaque,
         lpCurrentDirectory: ?windows.LPCWSTR,
         lpStartupInfo: *windows.STARTUPINFOW,
-        lpProcessInformation: *windows.PROCESS_INFORMATION,
+        lpProcessInformation: *PROCESS_INFORMATION,
     ) callconv(.winapi) c_int;
     extern "kernel32" fn ReadFile(
         hFile: windows.HANDLE,
@@ -407,7 +413,7 @@ fn spawnWindows(
     var startup = std.mem.zeroes(win.STARTUPINFOEXW);
     startup.StartupInfo.cb = @sizeOf(win.STARTUPINFOEXW);
     startup.lpAttributeList = attribute_list;
-    var process_info = std.mem.zeroes(windows.PROCESS_INFORMATION);
+    var process_info = std.mem.zeroes(win.PROCESS_INFORMATION);
     const command_line = try windowsCommandLineAlloc(allocator, argv);
     defer allocator.free(command_line);
 
