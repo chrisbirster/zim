@@ -369,15 +369,21 @@ pub const Session = struct {
     }
 };
 
+fn traceWindows(comptime message: []const u8) void {
+    if (builtin.is_test and is_windows) std.debug.print("[pty] {s}\n", .{message});
+}
+
 fn spawnWindows(
     allocator: std.mem.Allocator,
     io: std.Io,
     argv: []const []const u8,
     options: SpawnOptions,
 ) !Session {
+    traceWindows("spawn:start");
     var input_read: windows.HANDLE = undefined;
     var input_write: windows.HANDLE = undefined;
     if (win.CreatePipe(&input_read, &input_write, null, 0) == 0) return error.PtyPipeFailed;
+    traceWindows("spawn:input-pipe");
     var input_read_open = true;
     var input_write_open = true;
     errdefer {
@@ -388,6 +394,7 @@ fn spawnWindows(
     var output_read: windows.HANDLE = undefined;
     var output_write: windows.HANDLE = undefined;
     if (win.CreatePipe(&output_read, &output_write, null, 0) == 0) return error.PtyPipeFailed;
+    traceWindows("spawn:output-pipe");
     var output_read_open = true;
     var output_write_open = true;
     errdefer {
@@ -396,9 +403,11 @@ fn spawnWindows(
     }
 
     var pseudo_console: win.HPCON = undefined;
+    traceWindows("spawn:before-create-pseudoconsole");
     if (win.CreatePseudoConsole(windowsCoord(options.dimensions), input_read, output_write, 0, &pseudo_console) < 0) {
         return error.PtySpawnFailed;
     }
+    traceWindows("spawn:after-create-pseudoconsole");
     var pseudo_console_open = true;
     errdefer {
         if (pseudo_console_open) win.ClosePseudoConsole(pseudo_console);
@@ -408,6 +417,7 @@ fn spawnWindows(
     input_read_open = false;
     _ = win.CloseHandle(output_write);
     output_write_open = false;
+    traceWindows("spawn:host-pipe-ends-closed");
 
     var attribute_size: usize = 0;
     _ = win.InitializeProcThreadAttributeList(null, 1, 0, &attribute_size);
@@ -427,6 +437,7 @@ fn spawnWindows(
         null,
         null,
     ) == 0) return error.PtySpawnFailed;
+    traceWindows("spawn:attributes-ready");
 
     var startup = std.mem.zeroes(win.STARTUPINFOEXW);
     startup.StartupInfo.cb = @sizeOf(win.STARTUPINFOEXW);
@@ -435,6 +446,7 @@ fn spawnWindows(
     const command_line = try windowsCommandLineAlloc(allocator, argv);
     defer allocator.free(command_line);
 
+    traceWindows("spawn:before-create-process");
     if (win.CreateProcessW(
         null,
         command_line.ptr,
@@ -447,6 +459,7 @@ fn spawnWindows(
         &startup.StartupInfo,
         &process_info,
     ) == 0) return error.PtySpawnFailed;
+    traceWindows("spawn:after-create-process");
     errdefer {
         _ = win.TerminateProcess(process_info.hProcess, 1);
         _ = win.CloseHandle(process_info.hProcess);
@@ -458,9 +471,11 @@ fn spawnWindows(
     const output_storage = try std.heap.page_allocator.alloc(u8, 1024 * 1024);
     errdefer std.heap.page_allocator.free(output_storage);
     output_state.* = .{ .storage = output_storage };
+    traceWindows("spawn:before-reader-thread");
     const output_thread = std.Thread.spawn(.{}, windowsOutputReader, .{ output_state, output_read }) catch {
         return error.PtySpawnFailed;
     };
+    traceWindows("spawn:after-reader-thread");
 
     input_write_open = false;
     output_read_open = false;
@@ -600,13 +615,23 @@ test "PTY platform boundary is explicit" {
 }
 
 test "PTY runs a child with terminal semantics" {
+    traceWindows("test:before-spawn");
     var session = try Session.spawn(std.testing.allocator, std.testing.io, &.{ "zig", "version" }, .{ .dimensions = .{ .columns = 100, .rows = 30 } });
-    defer session.deinit();
+    traceWindows("test:after-spawn");
+    defer {
+        traceWindows("test:before-deinit");
+        session.deinit();
+        traceWindows("test:after-deinit");
+    }
+    traceWindows("test:before-resize");
     try session.resize(.{ .columns = 120, .rows = 40 });
+    traceWindows("test:after-resize");
 
     var output: std.ArrayList(u8) = .empty;
     defer output.deinit(std.testing.allocator);
+    traceWindows("test:before-collect");
     try collectUntilExit(&session, std.testing.allocator, &output);
+    traceWindows("test:after-collect");
     try std.testing.expect(std.mem.indexOf(u8, output.items, "0.16") != null);
 }
 
