@@ -24,6 +24,9 @@ const win = struct {
     };
     const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
     const EXTENDED_STARTUPINFO_PRESENT: windows.CreateProcessFlags = @bitCast(@as(windows.DWORD, 0x00080000));
+    const WAIT_OBJECT_0: windows.DWORD = 0;
+    const WAIT_TIMEOUT: windows.DWORD = 258;
+    const INFINITE: windows.DWORD = 0xffffffff;
 
     extern "kernel32" fn CreatePipe(
         hReadPipe: *windows.HANDLE,
@@ -73,14 +76,14 @@ const win = struct {
         lpBuffer: windows.LPVOID,
         nNumberOfBytesToRead: windows.DWORD,
         lpNumberOfBytesRead: ?*windows.DWORD,
-        lpOverlapped: ?*windows.OVERLAPPED,
+        lpOverlapped: ?*anyopaque,
     ) callconv(.winapi) c_int;
     extern "kernel32" fn WriteFile(
         hFile: windows.HANDLE,
         lpBuffer: [*]const u8,
         nNumberOfBytesToWrite: windows.DWORD,
         lpNumberOfBytesWritten: ?*windows.DWORD,
-        lpOverlapped: ?*windows.OVERLAPPED,
+        lpOverlapped: ?*anyopaque,
     ) callconv(.winapi) c_int;
     extern "kernel32" fn TerminateProcess(hProcess: windows.HANDLE, uExitCode: windows.UINT) callconv(.winapi) c_int;
     extern "kernel32" fn WaitForSingleObject(hHandle: windows.HANDLE, dwMilliseconds: windows.DWORD) callconv(.winapi) windows.DWORD;
@@ -302,11 +305,11 @@ pub const Session = struct {
         if (self.reaped) return true;
         if (comptime is_windows) {
             const result = win.WaitForSingleObject(self.native.process, 0);
-            if (result == windows.WAIT_OBJECT_0) {
+            if (result == win.WAIT_OBJECT_0) {
                 self.reaped = true;
                 return true;
             }
-            if (result == windows.WAIT_TIMEOUT) return false;
+            if (result == win.WAIT_TIMEOUT) return false;
             return error.PtyWaitFailed;
         }
 
@@ -321,7 +324,7 @@ pub const Session = struct {
     pub fn wait(self: *Session) !void {
         if (self.reaped) return;
         if (comptime is_windows) {
-            if (win.WaitForSingleObject(self.native.process, windows.INFINITE) != windows.WAIT_OBJECT_0) return error.PtyWaitFailed;
+            if (win.WaitForSingleObject(self.native.process, win.INFINITE) != win.WAIT_OBJECT_0) return error.PtyWaitFailed;
             self.reaped = true;
             return;
         }
