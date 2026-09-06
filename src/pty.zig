@@ -88,8 +88,20 @@ const win = struct {
     extern "kernel32" fn CancelSynchronousIo(hThread: windows.HANDLE) callconv(.winapi) c_int;
 };
 
+const SpinMutex = struct {
+    state: u8 = 0,
+
+    fn lock(self: *@This()) void {
+        while (@cmpxchgWeak(u8, &self.state, 0, 1, .seq_cst, .seq_cst) != null) {}
+    }
+
+    fn unlock(self: *@This()) void {
+        @atomicStore(u8, &self.state, 0, .seq_cst);
+    }
+};
+
 const WindowsOutputState = if (is_windows) struct {
-    mutex: std.Thread.Mutex = .{},
+    mutex: SpinMutex = .{},
     storage: []u8,
     head: usize = 0,
     len: usize = 0,
