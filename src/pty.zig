@@ -336,13 +336,16 @@ pub const Session = struct {
 
     pub fn deinit(self: *Session) void {
         if (comptime is_windows) {
-            if (!self.reaped) self.terminate() catch {};
+            if (!self.reaped) {
+                self.terminate() catch {};
+                if (win.WaitForSingleObject(self.native.process, 2000) == win.WAIT_OBJECT_0) self.reaped = true;
+            }
             if (!self.closed) {
                 _ = win.CloseHandle(self.native.input_write);
-                win.ClosePseudoConsole(self.native.pseudo_console);
                 _ = win.CancelSynchronousIo(self.native.output_thread.getHandle());
                 self.native.output_thread.join();
                 _ = win.CloseHandle(self.native.output_read);
+                win.ClosePseudoConsole(self.native.pseudo_console);
                 std.heap.page_allocator.free(self.native.output_state.storage);
                 std.heap.page_allocator.destroy(self.native.output_state);
                 self.closed = true;
