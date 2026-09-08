@@ -54,7 +54,12 @@ jobs:
       - name: Test Windows PTY nonblocking lifecycle
         if: runner.os == 'Windows'
         timeout-minutes: 2
-        run: zig build test-pty -Dpty-only=true -Dpty-test-filter="PTY exposes nonblocking"
+        run: zig test src/pty.zig --test-filter "PTY exposes nonblocking"
+
+      - name: Test Windows terminal manager lifecycle
+        if: runner.os == 'Windows'
+        timeout-minutes: 2
+        run: zig test src/terminal.zig
 
       - name: Test pure Zig editor/headless core
         run: zig build test-core -Dheadless-only=true
