@@ -1,3 +1,5 @@
+const builtin = @import("builtin");
+
 test {
     _ = @import("buffer.zig");
     _ = @import("workspace.zig");
@@ -7,10 +9,19 @@ test {
     _ = @import("extmarks.zig");
     _ = @import("plugin_ui.zig");
     _ = @import("jobs.zig");
-    _ = @import("pty.zig");
-    _ = @import("terminal.zig");
+
+    // ConPTY integration is exercised by dedicated direct `zig test` CI steps
+    // on Windows. Running native PTY children from Zig's aggregate build test
+    // runner can keep that runner's IPC process alive after the child exits.
+    // Keep the aggregate suite focused on editor/headless coverage there while
+    // still running the full native PTY/terminal tests independently.
+    if (comptime builtin.os.tag != .windows) {
+        _ = @import("pty.zig");
+        _ = @import("terminal.zig");
+        _ = @import("terminal_controller.zig");
+    }
+
     _ = @import("terminal_screen.zig");
-    _ = @import("terminal_controller.zig");
     _ = @import("api.zig");
     _ = @import("lua_runtime.zig");
     _ = @import("plugin_manager.zig");
