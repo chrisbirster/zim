@@ -11,10 +11,6 @@ const capability_names = [_][]const u8{
     "commands",
     "keymaps",
     "autocmds",
-    "jobs",
-    "extmarks",
-    "diagnostics",
-    "ui",
     "rpc.callbacks",
     "rpc.stdio",
     "rpc.local",
@@ -395,7 +391,7 @@ test "RPC handshake exposes version metadata and capabilities" {
     response_wire.clearRetainingCapacity();
     var capabilities_response = try requestThroughHost(&host, 2, "zim.capabilities", &.{}, &response_wire);
     defer capabilities_response.deinit(std.testing.allocator);
-    try std.testing.expect(capabilities_response.frame.response.result.array.len >= 8);
+    try std.testing.expectEqual(capability_names.len, capabilities_response.frame.response.result.array.len);
 }
 
 test "remote command and autocmd registrations queue callback notifications" {
