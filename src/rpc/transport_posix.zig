@@ -120,7 +120,7 @@ pub fn sleepOneMs() void {
 }
 
 fn setNonblocking(fd: c_int) !void {
-    const flags = c.fcntl(fd, c.F_GETFL, 0);
+    const flags = c.fcntl(fd, c.F_GETFL, @as(c_int, 0));
     if (flags < 0) return error.RpcSocketFlagsFailed;
     if (c.fcntl(fd, c.F_SETFL, flags | c.O_NONBLOCK) < 0) return error.RpcSocketFlagsFailed;
 }
