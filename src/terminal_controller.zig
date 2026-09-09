@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const api_module = @import("api.zig");
 const editor_module = @import("editor.zig");
-const terminal = @import("terminal.zig");
+const terminal = @import("terminal");
 const terminal_screen = @import("terminal_screen.zig");
 
 const is_windows = builtin.os.tag == .windows;
@@ -86,11 +86,11 @@ pub const Controller = struct {
         try self.discardActive();
         const shell = self.defaultShell();
         const id = if (trimmed.len == 0)
-            try self.manager.start(&.{shell}, .{ .dimensions = self.dimensions() })
+            try self.manager.start(&.{shell}, .{ .dimensions = .{ .columns = self.columns, .rows = self.rows } })
         else if (comptime is_windows)
-            try self.manager.start(&.{ shell, "/d", "/s", "/c", trimmed }, .{ .dimensions = self.dimensions() })
+            try self.manager.start(&.{ shell, "/d", "/s", "/c", trimmed }, .{ .dimensions = .{ .columns = self.columns, .rows = self.rows } })
         else
-            try self.manager.start(&.{ shell, "-lc", trimmed }, .{ .dimensions = self.dimensions() });
+            try self.manager.start(&.{ shell, "-lc", trimmed }, .{ .dimensions = .{ .columns = self.columns, .rows = self.rows } });
         errdefer _ = self.manager.stop(id) catch false;
 
         var screen_state = try terminal_screen.Screen.init(self.allocator, self.columns, self.rows);
@@ -139,7 +139,7 @@ pub const Controller = struct {
         if (self.active_id) |id| {
             const snap = self.manager.snapshot(id);
             if (snap != null and snap.?.status == .running) {
-                if (try self.manager.resize(id, self.dimensions())) changed = true;
+                if (try self.manager.resize(id, .{ .columns = self.columns, .rows = self.rows })) changed = true;
             }
         }
         return changed;
@@ -178,10 +178,6 @@ pub const Controller = struct {
         }
         self.processed_output_len = output.len;
         return true;
-    }
-
-    fn dimensions(self: *const Controller) @import("pty.zig").Dimensions {
-        return .{ .columns = self.columns, .rows = self.rows };
     }
 
     fn defaultShell(self: *const Controller) []const u8 {

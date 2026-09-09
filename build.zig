@@ -33,6 +33,17 @@ pub fn build(b: *std.Build) void {
         return;
     }
 
+    // Keep terminal/PTY production code in a dependency module. Zig test
+    // declarations in dependency modules are not auto-discovered by aggregate
+    // root test modules, so Hondo/editor tests can use the real terminal code
+    // without re-running native child-process integration tests in their runner.
+    const terminal_module = b.createModule(.{
+        .root_source_file = b.path("src/terminal.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
     const zlua_dep = b.dependency("zlua", .{
         .target = target,
         .optimize = optimize,
@@ -73,6 +84,7 @@ pub fn build(b: *std.Build) void {
     });
     core_test_module.addImport("language", language_module);
     core_test_module.addImport("zlua", zlua);
+    core_test_module.addImport("terminal", terminal_module);
     const core_tests = b.addTest(.{
         .root_module = core_test_module,
         .filters = if (core_test_filter) |filter| &.{filter} else &.{},
@@ -137,6 +149,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "hondo", .module = hondo },
             .{ .name = "language", .module = language_module },
             .{ .name = "zlua", .module = zlua },
+            .{ .name = "terminal", .module = terminal_module },
         },
     });
     const exe = b.addExecutable(.{
@@ -162,6 +175,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "hondo", .module = hondo },
                 .{ .name = "language", .module = language_module },
                 .{ .name = "zlua", .module = zlua },
+                .{ .name = "terminal", .module = terminal_module },
             },
         }),
     });
