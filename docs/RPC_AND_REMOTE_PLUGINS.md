@@ -88,7 +88,9 @@ After the handshake:
 zim.capabilities []
 ```
 
-returns the capabilities exposed by the current RPC host. v0.9 includes editor capabilities such as buffers, commands, keymaps, autocommands, jobs, extmarks, diagnostics and UI, plus the RPC transport/callback capabilities.
+returns the RPC capabilities actually implemented by the current host. v0.9 advertises `buffers`, `commands`, `keymaps`, `autocmds`, `rpc.callbacks`, `rpc.stdio`, and `rpc.local`.
+
+The native Zim API also has jobs, extmarks, diagnostics, and plugin UI primitives, but v0.9 does not advertise those over RPC because corresponding remote methods are not implemented yet.
 
 Clients should prefer capability discovery over assuming that every future Zim build exposes every method.
 
@@ -287,6 +289,7 @@ v0.9 does not attempt to provide:
 - TCP/network RPC
 - authentication or encryption above the local OS transport
 - multiple simultaneous clients on one endpoint
+- RPC methods for jobs, extmarks, diagnostics, or plugin UI yet
 - remote callbacks on the normal keystroke/render path unless explicitly registered
 - arbitrary pointer/internal-memory access
 - a remote plugin marketplace or dependency solver
