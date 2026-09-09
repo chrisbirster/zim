@@ -3,7 +3,7 @@ const api_module = @import("api.zig");
 const editor_module = @import("editor.zig");
 const lua_runtime = @import("lua_runtime.zig");
 
-pub const zim_version = "0.7.0";
+pub const zim_version = "0.8.0";
 pub const plugin_api_version: u32 = 1;
 
 const manifest_name = "zim-plugin.meta";
@@ -741,6 +741,7 @@ fn capabilitiesSupported(text: []const u8) bool {
         if (std.mem.eql(u8, capability, "extmarks")) continue;
         if (std.mem.eql(u8, capability, "diagnostics")) continue;
         if (std.mem.eql(u8, capability, "ui")) continue;
+        if (std.mem.eql(u8, capability, "jobs")) continue;
         return false;
     }
     return true;
@@ -822,16 +823,16 @@ test "plugin manifest parses compatibility metadata" {
         \\version=1.2.3
         \\zim_api=1
         \\min_zim=0.4.0
-        \\max_zim=0.5.9
+        \\max_zim=0.8.9
         \\entry=lua/hello/init.lua
-        \\capabilities=commands,keymaps,autocmds
+        \\capabilities=commands,keymaps,autocmds,jobs
     );
     defer manifest.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("hello", manifest.name);
     try std.testing.expectEqualStrings("1.2.3", manifest.version);
     try std.testing.expectEqual(@as(u32, 1), manifest.api_version);
-    try std.testing.expect(versionInRange("0.4.0", manifest.min_zim, manifest.max_zim));
-    try std.testing.expect(!versionInRange("0.6.0", manifest.min_zim, manifest.max_zim));
+    try std.testing.expect(versionInRange("0.8.0", manifest.min_zim, manifest.max_zim));
+    try std.testing.expect(!versionInRange("0.9.0", manifest.min_zim, manifest.max_zim));
     try std.testing.expect(capabilitiesSupported(manifest.capabilities));
 }
 
@@ -889,7 +890,7 @@ test "plugin discovery is sorted and isolates a broken Lua plugin" {
     defer api.deinit();
     var lua = try lua_runtime.Runtime.init(allocator, &api, &editor);
     defer lua.deinit();
-    try lua.eval("zim.version = '0.4.0'");
+    try lua.eval("zim.version = '0.8.0'");
 
     const manager = try Manager.create(allocator, io, root, &api, &editor, &lua);
     defer manager.destroy();

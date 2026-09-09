@@ -9,6 +9,8 @@ pub const events = @import("events.zig");
 pub const pins = @import("../pins.zig");
 pub const extmarks = @import("../extmarks.zig");
 pub const plugin_ui = @import("../plugin_ui.zig");
+pub const jobs = @import("../jobs.zig");
+const job_api = @import("jobs.zig");
 
 pub const BufferHandle = handles.BufferHandle;
 pub const WindowHandle = handles.WindowHandle;
@@ -16,6 +18,7 @@ pub const TabHandle = handles.TabHandle;
 pub const PinId = pins.PinId;
 pub const NamespaceId = extmarks.NamespaceId;
 pub const ExtmarkId = extmarks.ExtmarkId;
+pub const JobId = jobs.JobId;
 
 pub const Api = struct {
     allocator: std.mem.Allocator,
@@ -23,6 +26,7 @@ pub const Api = struct {
     commands: commands.Registry,
     keymaps: keymaps.Registry,
     autocmds: events.Registry,
+    job_service: job_api.Service,
 
     pub fn init(allocator: std.mem.Allocator) Api {
         return .{
@@ -30,14 +34,20 @@ pub const Api = struct {
             .commands = commands.Registry.init(allocator),
             .keymaps = keymaps.Registry.init(allocator),
             .autocmds = events.Registry.init(allocator),
+            .job_service = job_api.Service.init(allocator),
         };
     }
 
     pub fn deinit(self: *Api) void {
+        self.job_service.deinit();
         self.commands.deinit();
         self.keymaps.deinit();
         self.autocmds.deinit();
         self.* = undefined;
+    }
+
+    pub fn registerJobCommands(self: *Api) !void {
+        try self.job_service.registerCommands(&self.commands);
     }
 
     pub fn currentBuffer(self: *const Api, editor: *const editor_module.Editor) BufferHandle {
@@ -166,6 +176,42 @@ pub const Api = struct {
     pub fn popupClose(self: *Api, editor: *editor_module.Editor) void {
         _ = self;
         editor.popupClose();
+    }
+
+    pub fn jobStart(self: *Api, editor: *editor_module.Editor, argv: []const []const u8, opts: jobs.Options) !JobId {
+        return self.job_service.start(editor, argv, opts);
+    }
+
+    pub fn jobWait(self: *Api, id: JobId) !void {
+        try self.job_service.wait(id);
+    }
+
+    pub fn jobStop(self: *Api, id: JobId) !bool {
+        return self.job_service.stop(id);
+    }
+
+    pub fn jobStatus(self: *const Api, id: JobId) ?jobs.Status {
+        return self.job_service.status(id);
+    }
+
+    pub fn jobSnapshot(self: *const Api, id: JobId) ?jobs.Snapshot {
+        return self.job_service.snapshot(id);
+    }
+
+    pub fn jobSnapshotAt(self: *const Api, index: usize) ?jobs.Snapshot {
+        return self.job_service.snapshotAt(index);
+    }
+
+    pub fn jobStdout(self: *const Api, id: JobId) ?[]const u8 {
+        return self.job_service.stdout(id);
+    }
+
+    pub fn jobStderr(self: *const Api, id: JobId) ?[]const u8 {
+        return self.job_service.stderr(id);
+    }
+
+    pub fn jobCount(self: *const Api) usize {
+        return self.job_service.count();
     }
 
     pub fn optionGet(self: *const Api, name: options.Name) options.Value {
@@ -358,4 +404,24 @@ test "public extmark diagnostics and popup API share native editor state" {
     try api.popupOpen(&editor, "Demo", &.{ "one", "two" });
     try std.testing.expect(editor.popup.open);
     try std.testing.expectEqualStrings("one", editor.popup.selectedLabel().?);
+}
+
+test "public job API owns asynchronous job state and commands" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    var api = Api.init(std.testing.allocator);
+    defer api.deinit();
+    try api.registerJobCommands();
+
+    const id = try api.jobStart(&editor, &.{ "zig", "version" }, .{});
+    try api.jobWait(id);
+    try std.testing.expectEqual(jobs.Status.completed, api.jobStatus(id).?);
+    try std.testing.expect(std.mem.indexOf(u8, api.jobStdout(id).?, "0.16") != null);
+    try std.testing.expectEqual(@as(usize, 1), api.jobCount());
+
+    try api.commandExecute(&editor, "JobStart", "zig version");
+    try api.jobWait(2);
+    try std.testing.expectEqual(jobs.Status.completed, api.jobSnapshotAt(1).?.status);
+    try api.commandExecute(&editor, "JobList", "");
+    try std.testing.expect(std.mem.indexOf(u8, editor.status_buffer[0..editor.status_len], "2:completed") != null);
 }
