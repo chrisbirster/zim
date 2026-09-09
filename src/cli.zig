@@ -119,10 +119,22 @@ test "parse RPC endpoints" {
 }
 
 test "parse help and version" {
-    switch (try parse(&.{"--help"})) { .help => {}, else => return error.TestUnexpectedResult }
-    switch (try parse(&.{"-h"})) { .help => {}, else => return error.TestUnexpectedResult }
-    switch (try parse(&.{"--version"})) { .version => {}, else => return error.TestUnexpectedResult }
-    switch (try parse(&.{"-v"})) { .version => {}, else => return error.TestUnexpectedResult }
+    switch (try parse(&.{"--help"})) {
+        .help => {},
+        else => return error.TestUnexpectedResult,
+    }
+    switch (try parse(&.{"-h"})) {
+        .help => {},
+        else => return error.TestUnexpectedResult,
+    }
+    switch (try parse(&.{"--version"})) {
+        .version => {},
+        else => return error.TestUnexpectedResult,
+    }
+    switch (try parse(&.{"-v"})) {
+        .version => {},
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "reject invalid startup arguments" {
