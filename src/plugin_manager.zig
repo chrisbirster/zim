@@ -3,7 +3,7 @@ const api_module = @import("api.zig");
 const editor_module = @import("editor.zig");
 const lua_runtime = @import("lua_runtime.zig");
 
-pub const zim_version = "0.8.0";
+pub const zim_version = "0.9.0";
 pub const plugin_api_version: u32 = 1;
 
 const manifest_name = "zim-plugin.meta";
@@ -890,7 +890,7 @@ test "plugin discovery is sorted and isolates a broken Lua plugin" {
     defer api.deinit();
     var lua = try lua_runtime.Runtime.init(allocator, &api, &editor);
     defer lua.deinit();
-    try lua.eval("zim.version = '0.8.0'");
+    try lua.eval("zim.version = '0.9.0'");
 
     const manager = try Manager.create(allocator, io, root, &api, &editor, &lua);
     defer manager.destroy();
