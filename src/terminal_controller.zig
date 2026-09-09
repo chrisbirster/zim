@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const api_module = @import("api.zig");
 const editor_module = @import("editor.zig");
+const rpc_controller = @import("rpc/controller.zig");
 const terminal = @import("terminal");
 const terminal_screen = @import("terminal_screen.zig");
 
@@ -12,6 +13,7 @@ pub const Controller = struct {
     io: std.Io,
     environment: *const std.process.Environ.Map,
     manager: terminal.Manager,
+    rpc: ?rpc_controller.Controller = null,
     active_id: ?terminal.TerminalId = null,
     screen_state: ?terminal_screen.Screen = null,
     visible: bool = false,
@@ -20,11 +22,7 @@ pub const Controller = struct {
     rows: u16 = 24,
     registered: bool = false,
 
-    pub fn init(
-        allocator: std.mem.Allocator,
-        io: std.Io,
-        environment: *const std.process.Environ.Map,
-    ) Controller {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, environment: *const std.process.Environ.Map) Controller {
         return .{
             .allocator = allocator,
             .io = io,
@@ -39,7 +37,13 @@ pub const Controller = struct {
         self.registered = true;
     }
 
+    pub fn attachRpc(self: *Controller, api: *api_module.Api, editor: *editor_module.Editor, endpoint: []const u8) !void {
+        if (self.rpc != null) return error.RpcAlreadyAttached;
+        self.rpc = try rpc_controller.Controller.init(self.allocator, api, editor, endpoint);
+    }
+
     pub fn deinit(self: *Controller, api: *api_module.Api) void {
+        if (self.rpc) |*rpc| rpc.deinit();
         if (self.registered) _ = api.commandDelete("terminal");
         if (self.screen_state) |*screen_value| screen_value.deinit();
         self.manager.deinit();
@@ -75,14 +79,12 @@ pub const Controller = struct {
             setStatus(editor, "terminal: PTY unsupported on this platform");
             return error.PtyUnsupported;
         }
-
         const trimmed = std.mem.trim(u8, command, " \t");
         if (trimmed.len == 0 and self.active_id != null) {
             self.visible = true;
             setStatus(editor, "terminal: reattached (Esc returns to editor)");
             return;
         }
-
         try self.discardActive();
         const shell = self.defaultShell();
         const id = if (trimmed.len == 0)
@@ -103,8 +105,12 @@ pub const Controller = struct {
     }
 
     pub fn poll(self: *Controller) !bool {
-        const id = self.active_id orelse return false;
-        var changed = try self.manager.poll(id);
+        var changed = false;
+        if (self.rpc) |*rpc| {
+            if (try rpc.poll()) changed = true;
+        }
+        const id = self.active_id orelse return changed;
+        if (try self.manager.poll(id)) changed = true;
         if (self.syncOutput(id)) changed = true;
         return changed;
     }
@@ -131,7 +137,6 @@ pub const Controller = struct {
         self.columns = new_columns;
         self.rows = new_rows;
         if (!size_changed) return false;
-
         var changed = false;
         if (self.screen_state) |*screen_state| {
             if (try screen_state.resize(new_columns, new_rows)) changed = true;
@@ -145,9 +150,7 @@ pub const Controller = struct {
         return changed;
     }
 
-    pub fn hide(self: *Controller) void {
-        self.visible = false;
-    }
+    pub fn hide(self: *Controller) void { self.visible = false; }
 
     pub fn stopActive(self: *Controller) !bool {
         const id = self.active_id orelse return false;
@@ -173,9 +176,7 @@ pub const Controller = struct {
         const output = self.manager.output(id) orelse return false;
         if (self.processed_output_len > output.len) self.processed_output_len = 0;
         if (self.processed_output_len == output.len) return false;
-        if (self.screen_state) |*screen_state| {
-            screen_state.feed(output[self.processed_output_len..]);
-        }
+        if (self.screen_state) |*screen_state| screen_state.feed(output[self.processed_output_len..]);
         self.processed_output_len = output.len;
         return true;
     }
@@ -227,7 +228,6 @@ test "terminal shell selection follows the native platform" {
     try environment.put("COMSPEC", "C:\\test\\cmd.exe");
     var controller = Controller.init(std.testing.allocator, std.testing.io, &environment);
     defer controller.manager.deinit();
-
     if (comptime is_windows) {
         try std.testing.expectEqualStrings("C:\\test\\cmd.exe", controller.defaultShell());
     } else {

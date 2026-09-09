@@ -4,10 +4,11 @@ const cli = @import("cli.zig");
 const editor = @import("editor.zig");
 const lua_runtime = @import("lua_runtime.zig");
 const plugin_manager = @import("plugin_manager.zig");
+const rpc = @import("rpc/root.zig");
 const terminal_controller = @import("terminal_controller.zig");
 const tui = @import("tui.zig");
 
-pub const version = "0.8.0";
+pub const version = "0.9.0";
 
 const help_text =
     \\Zim — your new code overlord.
@@ -16,9 +17,11 @@ const help_text =
     \\  zim [options] [file|directory]
     \\
     \\Options:
-    \\  -h, --help       Show this help
-    \\  -v, --version    Show the Zim version
-    \\      --headless   Start the editor core without the Hondo TUI
+    \\  -h, --help              Show this help
+    \\  -v, --version           Show the Zim version
+    \\      --headless          Start the editor core without the Hondo TUI
+    \\      --rpc-stdio         Serve MessagePack-RPC on stdin/stdout (headless)
+    \\      --rpc-listen NAME   Serve local RPC (Unix socket path / Windows pipe name)
     \\
 ;
 
@@ -56,23 +59,14 @@ pub fn run(init: std.process.Init) !u8 {
 
             var lua = try lua_runtime.Runtime.init(init.gpa, &api, &state);
             defer lua.deinit();
-            try lua.eval("zim.version = '0.8.0'");
+            try lua.eval("zim.version = '0.9.0'");
 
             var plugins: ?*plugin_manager.Manager = null;
             defer if (plugins) |manager| manager.destroy();
-
             if (try configRootAlloc(init.gpa, init.environ_map)) |config_root| {
                 defer init.gpa.free(config_root);
                 try state.configurePins(config_root);
-                plugins = try plugin_manager.Manager.create(
-                    init.gpa,
-                    init.io,
-                    config_root,
-                    &api,
-                    &state,
-                    &lua,
-                );
-
+                plugins = try plugin_manager.Manager.create(init.gpa, init.io, config_root, &api, &state, &lua);
                 const config_path = try std.fmt.allocPrint(init.gpa, "{s}/init.lua", .{config_root});
                 defer init.gpa.free(config_path);
                 _ = lua.loadFile(init.io, config_path) catch |err| blk: {
@@ -84,18 +78,8 @@ pub fn run(init: std.process.Init) !u8 {
             const current = api.currentBuffer(&state);
             const window = api.currentWindow(&state);
             const tab = api.currentTab(&state);
-            try api.emit(&state, .{
-                .kind = .editor_enter,
-                .buffer_id = current.id,
-                .window_id = window.id,
-                .tab_id = tab.id,
-            });
-            try api.emit(&state, .{
-                .kind = .buffer_enter,
-                .buffer_id = current.id,
-                .window_id = window.id,
-                .tab_id = tab.id,
-            });
+            try api.emit(&state, .{ .kind = .editor_enter, .buffer_id = current.id, .window_id = window.id, .tab_id = tab.id });
+            try api.emit(&state, .{ .kind = .buffer_enter, .buffer_id = current.id, .window_id = window.id, .tab_id = tab.id });
             defer api.emit(&state, .{
                 .kind = .editor_leave,
                 .buffer_id = state.currentBufferConst().id,
@@ -103,37 +87,45 @@ pub fn run(init: std.process.Init) !u8 {
                 .tab_id = state.activeTabConst().id,
             }) catch {};
 
+            if (options.rpc_stdio) {
+                var host = rpc.Host.init(init.gpa, &api, &state);
+                defer host.deinit();
+                try rpc.transport.serveStdio(init.gpa, &host);
+                return 0;
+            }
+
+            if (options.rpc_listen) |endpoint| {
+                if (options.headless) {
+                    var rpc_controller = try rpc.Controller.init(init.gpa, &api, &state, endpoint);
+                    defer rpc_controller.deinit();
+                    try rpc_controller.serveUntilDisconnect();
+                    return 0;
+                }
+                try terminal.attachRpc(&api, &state, endpoint);
+            }
+
             if (options.headless) return 0;
             return tui.run(init, &state, &api, &terminal);
         },
     }
 }
 
-fn configRootAlloc(
-    allocator: std.mem.Allocator,
-    environment: *const std.process.Environ.Map,
-) !?[]u8 {
-    if (environment.get("XDG_CONFIG_HOME")) |root| {
-        return try std.fmt.allocPrint(allocator, "{s}/zim", .{root});
-    }
-    if (environment.get("APPDATA")) |root| {
-        return try std.fmt.allocPrint(allocator, "{s}/zim", .{root});
-    }
-    if (environment.get("HOME")) |home| {
-        return try std.fmt.allocPrint(allocator, "{s}/.config/zim", .{home});
-    }
+fn configRootAlloc(allocator: std.mem.Allocator, environment: *const std.process.Environ.Map) !?[]u8 {
+    if (environment.get("XDG_CONFIG_HOME")) |root| return try std.fmt.allocPrint(allocator, "{s}/zim", .{root});
+    if (environment.get("APPDATA")) |root| return try std.fmt.allocPrint(allocator, "{s}/zim", .{root});
+    if (environment.get("HOME")) |home| return try std.fmt.allocPrint(allocator, "{s}/.config/zim", .{home});
     return null;
 }
 
 fn printParseError(io: std.Io, err: cli.ParseError) !void {
     var buffer: [512]u8 = undefined;
     var writer = std.Io.File.stderr().writer(io, &buffer);
-
     switch (err) {
         error.UnknownOption => try writer.interface.writeAll("zim: unknown option\n"),
         error.TooManyTargets => try writer.interface.writeAll("zim: only one file or directory may be opened at startup\n"),
+        error.MissingOptionValue => try writer.interface.writeAll("zim: RPC option requires an endpoint value\n"),
+        error.MultipleRpcEndpoints => try writer.interface.writeAll("zim: only one RPC endpoint may be configured\n"),
     }
-
     try writer.interface.writeAll("Run 'zim --help' for usage.\n");
     try writer.interface.flush();
 }
