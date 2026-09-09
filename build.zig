@@ -84,7 +84,6 @@ pub fn build(b: *std.Build) void {
     });
     core_test_module.addImport("language", language_module);
     core_test_module.addImport("zlua", zlua);
-    core_test_module.addImport("terminal", terminal_module);
     const core_tests = b.addTest(.{
         .root_module = core_test_module,
         .filters = if (core_test_filter) |filter| &.{filter} else &.{},

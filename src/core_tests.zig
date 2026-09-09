@@ -18,7 +18,6 @@ test {
     if (comptime builtin.os.tag != .windows) {
         _ = @import("pty.zig");
         _ = @import("terminal.zig");
-        _ = @import("terminal_controller.zig");
     }
 
     _ = @import("terminal_screen.zig");
