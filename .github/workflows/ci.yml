@@ -92,6 +92,10 @@ jobs:
       - name: Build Zim
         run: zig build
 
+      - name: Test MessagePack-RPC process boundary
+        timeout-minutes: 2
+        run: python scripts/rpc-smoke.py
+
       - name: Test Hondo integration
         run: zig build test-integration
 
