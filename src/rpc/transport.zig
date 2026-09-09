@@ -13,7 +13,7 @@ pub const LocalEndpoint = native.LocalEndpoint;
 pub const sleepOneMs = native.sleepOneMs;
 
 pub fn serveStdio(allocator: std.mem.Allocator, host: *host_module.Host) !void {
-    var stream = tryStdio();
+    var stream = try tryStdio();
     try server.serve(allocator, host, &stream);
 }
 
