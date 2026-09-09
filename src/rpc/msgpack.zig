@@ -421,5 +421,5 @@ test "MessagePack round trips the RPC subset" {
 
 test "MessagePack scanner distinguishes incomplete frames" {
     try std.testing.expectError(error.NeedMoreData, scanOne(&.{ 0x92, 0xa3, 'z', 'i' }));
-    try std.testing.expectEqual(@as(usize, 5), try scanOne(&.{ 0x92, 0xa3, 'z', 'i', 'm' }));
+    try std.testing.expectEqual(@as(usize, 6), try scanOne(&.{ 0x92, 0xa3, 'z', 'i', 'm', 0xc0 }));
 }
