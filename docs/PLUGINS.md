@@ -1,8 +1,8 @@
 # Zim Plugins
 
-Zim introduced its built-in Git-backed package manager for in-process Lua plugins in v0.4. The extension surface has continued to grow; this document reflects the current v0.8.0 plugin contract.
+Zim introduced its built-in Git-backed package manager for in-process Lua plugins in v0.4. The extension surface has continued to grow; this document reflects the current v0.9.0 in-process plugin contract and explains how it relates to v0.9 remote plugins.
 
-The design is intentionally small and native:
+The managed Lua plugin design is intentionally small and native:
 
 - plugin discovery and package state live in Zig
 - plugin code runs in the embedded Lua 5.4 runtime
@@ -149,7 +149,7 @@ Entries are written in deterministic name order. The revision column is the exac
 
 ## Plugin manifest
 
-Every plugin directory must contain `zim-plugin.meta`.
+Every managed Lua plugin directory must contain `zim-plugin.meta`.
 
 Minimal manifest:
 
@@ -159,14 +159,14 @@ version=0.1.0
 zim_api=1
 ```
 
-Expanded manifest for v0.8:
+Expanded manifest for v0.9:
 
 ```text
 name=git-signs
 version=0.1.0
 zim_api=1
-min_zim=0.8.0
-max_zim=0.8.9
+min_zim=0.9.0
+max_zim=0.9.9
 entry=plugin.lua
 capabilities=commands,keymaps,autocmds,buffers,lsp,pins,extmarks,diagnostics,ui,jobs
 ```
@@ -177,7 +177,7 @@ Supported fields:
 | --- | --- | --- |
 | `name` | yes | Plugin name. Must match the installed directory name. |
 | `version` | yes | Plugin version in `major.minor.patch` form. |
-| `zim_api` | yes | Plugin API generation. v0.8 supports `1`. |
+| `zim_api` | yes | Plugin API generation. v0.9 supports `1`. |
 | `min_zim` | no | Minimum compatible Zim version. Defaults to the current Zim version. |
 | `max_zim` | no | Maximum compatible Zim version. |
 | `entry` | no | Lua entry file relative to the plugin root. Defaults to `plugin.lua`. |
@@ -189,7 +189,7 @@ The entry path must be relative and cannot traverse upward with `..`.
 
 ## Capabilities
 
-v0.8 recognizes these declarations:
+v0.9 recognizes these declarations for managed Lua plugins:
 
 - `commands`
 - `keymaps`
@@ -204,9 +204,9 @@ v0.8 recognizes these declarations:
 
 Capabilities are compatibility metadata, not a security sandbox. Lua plugins execute in-process and should be treated as trusted code.
 
-A plugin that starts asynchronous tools through `zim.job` should declare `jobs`. See [Jobs + Terminal](JOBS_AND_TERMINAL.md) for the v0.8 job API and terminal architecture.
+A plugin that starts asynchronous tools through `zim.job` should declare `jobs`. See [Jobs + Terminal](JOBS_AND_TERMINAL.md) for the job API and terminal architecture.
 
-## Writing a plugin
+## Writing a managed Lua plugin
 
 A minimal `plugin.lua` can use the public Lua API directly:
 
@@ -297,19 +297,37 @@ Use:
 :Keymaps
 ```
 
-`Commands` lists the public command registry in deterministic name order. `Keymaps` lists the current public keymap registry. Together with `PackList`, these provide the extension-discovery surface.
+`Commands` lists the public command registry in deterministic name order. `Keymaps` lists the current public keymap registry. Together with `PackList`, these provide the in-process extension-discovery surface.
+
+## Remote plugins in v0.9
+
+Remote plugins are external local processes rather than package-managed Lua modules. They connect through MessagePack-RPC using one of the v0.9 transports:
+
+```text
+stdio
+Unix-domain socket (Linux/macOS)
+Windows named pipe
+```
+
+A remote client negotiates protocol/API metadata, discovers capabilities, and can register supported public commands, keymaps, and autocommands through stable remote registration IDs. Command and autocommand callbacks return to the client as MessagePack-RPC notifications.
+
+Remote registrations are scoped to the RPC connection and are cleaned up when that connection is discarded. They do not use `zim-plugin.meta`, `plugins.lock`, or `:PackAdd`.
+
+See [MessagePack-RPC + Remote Plugins](RPC_AND_REMOTE_PLUGINS.md) for the wire protocol, method shapes, transport lifecycle, and callback model.
 
 ## Security model
 
-Plugins are trusted in-process code. Installing a plugin gives its Lua code access to the Lua standard libraries exposed by Zim and to Zim's public Lua editor API.
+Managed Lua plugins are trusted in-process code. Installing one gives its Lua code access to the Lua standard libraries exposed by Zim and to Zim's public Lua editor API.
 
 The package manager avoids shell interpolation when invoking Git, validates plugin names, rejects unsafe entry paths, and caps file/process output reads, but these protections do not turn plugins into a sandbox.
 
-Only install plugin repositories you trust.
+Remote plugins are trusted local processes. v0.9 exposes no TCP listener and relies on local OS transports, but the RPC layer is not an authentication or sandbox boundary. A connected client can request supported editor mutations.
 
-## Deliberate v0.8 limits
+Only install Lua plugin repositories you trust and only expose local RPC endpoints to processes you trust.
 
-v0.8 does not include:
+## Deliberate v0.9 limits
+
+v0.9 does not include:
 
 - hot loading/unloading after package mutations
 - a central plugin registry
@@ -317,6 +335,9 @@ v0.8 does not include:
 - semantic-version constraint solving for package installation
 - Neovim API compatibility
 - Neovim plugin compatibility
-- MessagePack-RPC remote plugins
+- TCP/network RPC
+- an RPC authentication/encryption layer
+- multiple simultaneous remote clients on one local endpoint
+- a language-specific remote plugin SDK
 
-Jobs, extmarks/plugin UI primitives, and the native terminal are now part of the public v0.8 direction while remaining Zim-native rather than Neovim-compatible APIs.
+Jobs, extmarks/plugin UI primitives, the native terminal, managed Lua plugins, and local MessagePack-RPC remote plugins remain Zim-native rather than Neovim-compatible APIs.
