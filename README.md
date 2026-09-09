@@ -46,34 +46,61 @@ keyboard / terminal
 
 The TUI and editor core stay in the same Zig process. Normal editing never depends on RPC, HTTP, a browser, or a GUI shell.
 
-Lua is the primary configuration and in-process plugin language. External plugins and automation will use the same editor concepts over MessagePack-RPC in a later milestone.
+Lua is the primary configuration and in-process plugin language. External plugins and automation use the same public editor concepts through local MessagePack-RPC without moving native editor state out of Zig.
 
 ## Current status
 
-Zim is a real modal editor under active pre-1.0 development. The current development version is **`v0.8.0 — Jobs + Terminal`**.
+Zim is a real modal editor under active pre-1.0 development. The current development version is **`v0.9.0 — MessagePack-RPC + Remote Plugins`**.
 
-`v0.8.0` adds native process and terminal workflows while preserving Zig ownership of the editor hot path:
+`v0.9.0` exposes the public editor API to trusted local external processes while preserving native ownership of editor semantics:
 
-- editor-independent asynchronous `JobManager` with stable IDs and status snapshots
-- argv-based process spawning with explicit cwd/environment/stdin options
-- independently drained, bounded stdout/stderr with live visibility and truncation metadata
-- cancellation/wait lifecycle plus public Zig job APIs
-- built-in `:JobStart`, `:JobStop`, and `:JobList`
-- Lua `zim.job.start/stop/status/stdout/stderr`
-- plugin `jobs` compatibility capability
-- native PTY abstraction with POSIX `forkpty` and Windows ConPTY backends
-- Zig-owned interactive terminal sessions, output buffering, screen state, input, resize, and exit lifecycle
-- `:terminal [command]` with native shell conventions and reattach behavior
-- native terminal keyboard ownership: `Ctrl-C` interrupts the child and `Esc` returns to the editor
-- passive Hondo terminal rendering; Hondo does not own subprocess or terminal-emulator state
-- real pinned ZLS 0.16.0 subprocess smoke testing
-- Ubuntu, macOS, and Windows CI
+- bounded MessagePack codec with incremental stream framing
+- MessagePack-RPC request/response/notification protocol
+- explicit RPC protocol and public API version negotiation
+- capability discovery
+- headless stdio RPC
+- Unix-domain socket transport on Linux/macOS
+- Windows named-pipe transport
+- remote commands, keymaps, and autocommands backed by the existing native registries
+- stable remote registration IDs with disconnect cleanup
+- remote command/autocommand callback notifications
+- buffer access and public command execution over RPC
+- nonblocking interactive RPC polling on Zim's editor thread
+- process-boundary CI smokes on Ubuntu, macOS, and Windows
 
 ```text
-ZIM 0.8.0 — YOUR NEW CODE OVERLORD
+ZIM 0.9.0 — YOUR NEW CODE OVERLORD
 ```
 
-See [Jobs + Terminal](docs/JOBS_AND_TERMINAL.md) for the v0.8 process, PTY, Lua, and terminal contracts.
+See [MessagePack-RPC + Remote Plugins](docs/RPC_AND_REMOTE_PLUGINS.md) for the v0.9 wire protocol, transports, callbacks, lifecycle, and security model.
+
+## MessagePack-RPC + Remote Plugins
+
+Run a headless stdio RPC server:
+
+```bash
+zim --rpc-stdio
+```
+
+Run a headless local IPC server:
+
+```bash
+zim --headless --rpc-listen /tmp/zim.sock
+```
+
+Or keep the normal TUI and let a remote plugin attach locally:
+
+```bash
+zim --rpc-listen /tmp/zim.sock .
+```
+
+On Windows, `--rpc-listen zim-main` serves `\\.\pipe\zim-main` instead of a Unix socket.
+
+Clients first negotiate protocol/API metadata with `zim.handshake`, then can discover capabilities and call the supported public RPC methods. Remote commands and autocommands receive callback notifications; registrations are scoped to the connection and cleaned up when that connection is discarded.
+
+RPC is local-only in v0.9. There is no TCP listener, RPC authentication layer, or network plugin registry. Treat connected remote processes as trusted local extensions.
+
+See [MessagePack-RPC + Remote Plugins](docs/RPC_AND_REMOTE_PLUGINS.md) for the complete v0.9 contract.
 
 ## Jobs + Terminal
 
@@ -261,9 +288,9 @@ Update, list, or remove plugins:
 
 Package mutations are applied on disk immediately and the resulting exact Git commit is recorded in `plugins.lock`. Restart Zim to load newly installed/updated code or unload removed code.
 
-Plugins are trusted in-process Lua code. Capabilities such as `extmarks`, `diagnostics`, `ui`, and `jobs` are compatibility metadata, not sandbox permissions. Zim does not claim Neovim API/plugin compatibility.
+Package-managed plugins are trusted in-process Lua code. Capabilities such as `extmarks`, `diagnostics`, `ui`, and `jobs` are compatibility metadata, not sandbox permissions. Remote plugins are separate trusted local processes connected through MessagePack-RPC. Zim does not claim Neovim API/plugin compatibility.
 
-See [Plugins](docs/PLUGINS.md) for package management and plugin authoring, and [Lua Configuration](docs/LUA_CONFIGURATION.md) for the public Lua editor API.
+See [Plugins](docs/PLUGINS.md) for package management and in-process plugin authoring, [Lua Configuration](docs/LUA_CONFIGURATION.md) for the public Lua editor API, and [MessagePack-RPC + Remote Plugins](docs/RPC_AND_REMOTE_PLUGINS.md) for external extensions.
 
 ## Extension architecture
 
@@ -279,7 +306,7 @@ Zim has one conceptual public editor API. The stable Zig entrypoint is `src/api.
                config + plugins  remote tools
 ```
 
-Lua binds to public editor concepts rather than arbitrary internal pointers. The same boundary is intended to back future RPC extensions.
+Lua binds to public editor concepts rather than arbitrary internal pointers. MessagePack-RPC adapts that same public boundary for local external processes; it does not expose native pointers or internal object layouts.
 
 ## Quick Lua configuration
 
@@ -326,7 +353,7 @@ The current keymap bridge intentionally starts small: `lhs` and `rhs` are single
 - jobs and terminal process state are native editor services
 - Lua is the primary embedded configuration/plugin language
 - one stable editor API is shared by built-ins and extension layers
-- MessagePack-RPC powers future external plugins and automation
+- MessagePack-RPC powers local external plugins, automation, and headless control
 - headless operation is an architectural feature
 
 ## Development
@@ -336,6 +363,7 @@ The current keymap bridge intentionally starts small: `lhs` and `rhs` are single
 - Zig 0.16.0
 - Node.js for the bundled Solid/Hondo UI build
 - Git for `PackAdd`, `PackUpdate`, and managed plugin revisions
+- Python 3 for the CI RPC process-boundary smoke harness
 
 Lua is embedded; a system Lua installation is not required.
 
@@ -359,6 +387,20 @@ zig build run -- --headless
 
 Headless startup still initializes the public API, job service, persisted Pins, plugin manager, installed plugins, Lua configuration, extmarks, diagnostics, and popup model; it simply skips the Hondo TUI and interactive terminal view.
 
+### RPC stdio
+
+```bash
+zig build run -- --rpc-stdio
+```
+
+### RPC local IPC
+
+```bash
+zig build run -- --headless --rpc-listen /tmp/zim.sock
+```
+
+Use a Windows named-pipe name instead of a socket path on Windows.
+
 ### Format
 
 ```bash
@@ -371,10 +413,11 @@ zig fmt src build.zig
 zig build test
 ```
 
-CI runs the pure Zig core gate, job lifecycle/streaming/cancellation tests, PTY and terminal session/screen/controller tests, Pins persistence/Lua tests, extmark/edit-tracking and plugin UI tests, the real Git-backed plugin package lifecycle test, Hondo integration tests including native Pin and popup/completion navigation, the full suite, and the pinned real-ZLS smoke where configured.
+CI runs the pure Zig core gate, job lifecycle/streaming/cancellation tests, PTY and terminal session/screen/controller tests, Pins persistence/Lua tests, extmark/edit-tracking and plugin UI tests, the real Git-backed plugin package lifecycle test, MessagePack-RPC host/protocol tests, external-process stdio + local-IPC RPC smokes, Hondo integration tests including native Pin and popup/completion navigation, the full suite, and the pinned real-ZLS smoke where configured.
 
 ## Read next
 
+- [MessagePack-RPC + Remote Plugins](docs/RPC_AND_REMOTE_PLUGINS.md)
 - [Jobs + Terminal](docs/JOBS_AND_TERMINAL.md)
 - [Extmarks, Diagnostics, and Plugin UI](docs/EXTMARKS_AND_PLUGIN_UI.md)
 - [Pins](docs/PINS.md)
