@@ -182,6 +182,7 @@ pub const Session = struct {
     native: Native,
     reaped: bool = false,
     closed: bool = false,
+    windows_output_finalized: bool = false,
 
     pub fn supported() bool {
         return true;
@@ -264,13 +265,17 @@ pub const Session = struct {
 
     pub fn write(self: *Session, bytes: []const u8) !void {
         if (self.closed) return error.PtyClosed;
-        if (comptime is_windows) return writeWindows(self.native.input_write, bytes);
+        if (comptime is_windows) {
+            if (self.windows_output_finalized) return error.PtyClosed;
+            return writeWindows(self.native.input_write, bytes);
+        }
         try self.native.master.writeStreamingAll(self.io, bytes);
     }
 
     pub fn resize(self: *Session, dimensions: Dimensions) !void {
         if (self.closed) return error.PtyClosed;
         if (comptime is_windows) {
+            if (self.windows_output_finalized) return error.PtyClosed;
             if (win.ResizePseudoConsole(self.native.pseudo_console, windowsCoord(dimensions)) < 0) return error.PtyResizeFailed;
             return;
         }
@@ -307,6 +312,7 @@ pub const Session = struct {
             const result = win.WaitForSingleObject(self.native.process, 0);
             if (result == win.WAIT_OBJECT_0) {
                 self.reaped = true;
+                self.finalizeWindowsOutput();
                 return true;
             }
             if (result == win.WAIT_TIMEOUT) return false;
@@ -326,6 +332,7 @@ pub const Session = struct {
         if (comptime is_windows) {
             if (win.WaitForSingleObject(self.native.process, win.INFINITE) != win.WAIT_OBJECT_0) return error.PtyWaitFailed;
             self.reaped = true;
+            self.finalizeWindowsOutput();
             return;
         }
 
@@ -334,18 +341,35 @@ pub const Session = struct {
         self.reaped = true;
     }
 
+    fn finalizeWindowsOutput(self: *Session) void {
+        if (comptime is_windows) {
+            if (self.windows_output_finalized) return;
+
+            // Keep the output reader alive while the pseudoconsole closes. ConPTY
+            // may emit its final frame during teardown, so cancelling the reader
+            // before ClosePseudoConsole can silently drop the tail of terminal output.
+            _ = win.CloseHandle(self.native.input_write);
+            win.ClosePseudoConsole(self.native.pseudo_console);
+
+            const reader_handle = self.native.output_thread.getHandle();
+            const reader_result = win.WaitForSingleObject(reader_handle, 1000);
+            if (reader_result != win.WAIT_OBJECT_0) {
+                _ = win.CancelSynchronousIo(reader_handle);
+            }
+            self.native.output_thread.join();
+            _ = win.CloseHandle(self.native.output_read);
+            self.windows_output_finalized = true;
+        }
+    }
+
     pub fn deinit(self: *Session) void {
         if (comptime is_windows) {
             if (!self.reaped) {
                 self.terminate() catch {};
                 if (win.WaitForSingleObject(self.native.process, 2000) == win.WAIT_OBJECT_0) self.reaped = true;
             }
+            if (!self.windows_output_finalized) self.finalizeWindowsOutput();
             if (!self.closed) {
-                _ = win.CloseHandle(self.native.input_write);
-                _ = win.CancelSynchronousIo(self.native.output_thread.getHandle());
-                self.native.output_thread.join();
-                _ = win.CloseHandle(self.native.output_read);
-                win.ClosePseudoConsole(self.native.pseudo_console);
                 std.heap.page_allocator.free(self.native.output_state.storage);
                 std.heap.page_allocator.destroy(self.native.output_state);
                 self.closed = true;
@@ -507,7 +531,10 @@ fn windowsOutputReader(state: *WindowsOutputState, handle: windows.HANDLE) void 
             state.finish(false);
             return;
         }
-        if (!state.push(buffer[0..read_count])) return;
+        if (!state.push(buffer[0..read_count])) {
+            state.finish(true);
+            return;
+        }
     }
 }
 
