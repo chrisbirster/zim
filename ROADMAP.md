@@ -228,7 +228,7 @@ Validation evidence: exact PR head `55618299647cc57ac5102d11725ab785d4451acf` pa
 
 ## v0.9.0 — MessagePack-RPC + Remote Plugins
 
-**Status: implementation complete; final exact-head validation in progress.**
+**Status: complete.**
 
 **Goal:** expose the same public editor concepts to trusted local external processes without moving editor semantics out of the native Zig core.
 
@@ -254,8 +254,10 @@ Validation evidence: exact PR head `55618299647cc57ac5102d11725ab785d4451acf` pa
 - [x] external-process stdio + local IPC smoke harness
 - [x] coherent 0.9.0 executable/Lua/plugin/build versioning
 - [x] user-facing RPC/remote plugin documentation
-- [ ] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
-- [ ] exact merged-main CI green
+- [x] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
+- [x] exact merged-main CI green
+
+Validation evidence: final exact PR head `54c14012176f2865b1f0bc6fb348707dc38daaf3` passed CI #264 (run `34534285219`) on Ubuntu, macOS, and Windows, including MessagePack-RPC process-boundary smoke on all three platforms and the pinned real-ZLS 0.16.0 smoke on Ubuntu. PR #40 squash-merged to `main` as `3f1bad9dc3c0cf2cc6dd706a1c7d4f256ec17425`; exact merged-main CI #265 (run `34534689525`) passed Ubuntu, macOS, and Windows, including the full Windows PTY/terminal gate, RPC process-boundary smoke, Hondo integration, and the full suite. Windows CI now disables setup-zig build-cache restoration and isolates direct native-test caches after incomplete restored Zig artifacts caused false `FileNotFound` failures.
 
 **Exit condition:** an external process can connect locally, negotiate protocol/API metadata, discover capabilities, register commands/keymaps/autocommands through stable remote IDs, receive callback notifications, and control supported public editor state through a documented MessagePack-RPC protocol while normal editing remains local to Zig.
 
