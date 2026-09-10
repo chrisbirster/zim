@@ -29,4 +29,5 @@ test {
     _ = @import("lsp/root.zig");
     _ = @import("lsp_bridge.zig");
     _ = @import("headless.zig");
+    _ = @import("rpc/root.zig");
 }

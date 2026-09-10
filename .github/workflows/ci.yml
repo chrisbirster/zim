@@ -34,9 +34,17 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Zig
+        if: runner.os != 'Windows'
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+
+      - name: Install Zig (Windows, no build cache)
+        if: runner.os == 'Windows'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+          use-cache: false
 
       - name: Check Zig formatting
         run: zig fmt --check src build.zig
@@ -49,16 +57,22 @@ jobs:
       - name: Test Windows PTY child lifecycle
         if: runner.os == 'Windows'
         timeout-minutes: 2
+        env:
+          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zim-pty-child-cache
         run: zig test src/pty.zig --test-filter "PTY runs a child"
 
       - name: Test Windows PTY nonblocking lifecycle
         if: runner.os == 'Windows'
         timeout-minutes: 2
+        env:
+          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zim-pty-nonblocking-cache
         run: zig test src/pty.zig --test-filter "PTY exposes nonblocking"
 
       - name: Test Windows terminal manager lifecycle
         if: runner.os == 'Windows'
         timeout-minutes: 2
+        env:
+          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zim-terminal-cache
         run: zig test src/terminal.zig
 
       - name: Test pure Zig editor/headless core
@@ -91,6 +105,15 @@ jobs:
 
       - name: Build Zim
         run: zig build
+
+      - name: Install Python for RPC smoke
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Test MessagePack-RPC process boundary
+        timeout-minutes: 2
+        run: python scripts/rpc-smoke.py
 
       - name: Test Hondo integration
         run: zig build test-integration

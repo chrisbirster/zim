@@ -193,7 +193,7 @@ Validation evidence: implementation preflight head `6a414e981021ccea8dc7dd24a5ff
 
 ## v0.8.0 — Jobs + Terminal
 
-**Status: implementation complete; final exact-head validation in progress.**
+**Status: complete.**
 
 **Goal:** support build, test, tool, and interactive shell workflows without leaving Zim while preserving the Zig-native editor hot path.
 
@@ -219,25 +219,45 @@ Validation evidence: implementation preflight head `6a414e981021ccea8dc7dd24a5ff
 - [x] PTY, terminal session, terminal screen, controller, Lua job, and plugin capability tests
 - [x] coherent 0.8.0 executable/Lua/plugin/build versioning
 - [x] user-facing Jobs + Terminal and updated plugin documentation
-- [ ] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
-- [ ] exact merged-main CI green
+- [x] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
+- [x] exact merged-main CI green
+
+Validation evidence: exact PR head `55618299647cc57ac5102d11725ab785d4451acf` passed CI #243 (run `34295507279`) on Ubuntu, macOS, and Windows. Squash-merged main commit `13f0670c366d061cbacf0f9955b865b63a819853` passed push CI #244 (run `34296123459`) on Ubuntu, macOS, and Windows; Ubuntu also passed the pinned real-ZLS 0.16.0 smoke.
 
 **Exit condition:** a Zig or Lua extension can start a tool asynchronously, receive separated stdout/stderr without blocking the editor, inspect or stop it safely, and a user can open an interactive terminal whose process, PTY, input, resize, and rendered state remain owned by native Zim.
 
 ## v0.9.0 — MessagePack-RPC + Remote Plugins
 
-**Goal:** expose the same editor concepts to external processes.
+**Status: implementation complete; final exact-head validation in progress.**
 
-- [ ] MessagePack codec
-- [ ] RPC request/response/notification framing
-- [ ] API metadata/versioning
-- [ ] capability discovery
-- [ ] stdio channel
-- [ ] Unix-domain socket channel
-- [ ] Windows local IPC equivalent
-- [ ] remote command/keymap/autocmd registration
-- [ ] headless RPC integration tests
-- [ ] clear protocol/API mismatch diagnostics
+**Goal:** expose the same public editor concepts to trusted local external processes without moving editor semantics out of the native Zig core.
+
+- [x] bounded MessagePack codec with incremental frame scanning
+- [x] MessagePack-RPC request/response/notification framing
+- [x] RPC protocol and public API metadata/versioning
+- [x] protocol/API handshake and explicit mismatch diagnostics
+- [x] capability discovery
+- [x] stdio RPC channel
+- [x] Unix-domain socket local channel
+- [x] Windows named-pipe local channel
+- [x] remote command registration through the native command registry
+- [x] remote keymap registration through the native keymap registry
+- [x] remote autocommand registration through the native event registry
+- [x] stable remote registration IDs and cleanup
+- [x] remote command callback notifications
+- [x] remote autocommand callback notifications
+- [x] buffer state and public command execution RPC methods
+- [x] nonblocking local controller serviced on the editor thread
+- [x] headless stdio and local-IPC server modes
+- [x] interactive local RPC alongside the Hondo TUI
+- [x] headless/public API RPC integration tests
+- [x] external-process stdio + local IPC smoke harness
+- [x] coherent 0.9.0 executable/Lua/plugin/build versioning
+- [x] user-facing RPC/remote plugin documentation
+- [ ] final doc-inclusive exact-head CI green on Ubuntu/macOS/Windows
+- [ ] exact merged-main CI green
+
+**Exit condition:** an external process can connect locally, negotiate protocol/API metadata, discover capabilities, register commands/keymaps/autocommands through stable remote IDs, receive callback notifications, and control supported public editor state through a documented MessagePack-RPC protocol while normal editing remains local to Zig.
 
 ## v1.0.0 — Daily Driver
 

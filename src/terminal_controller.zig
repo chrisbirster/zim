@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const api_module = @import("api.zig");
 const editor_module = @import("editor.zig");
+const rpc_controller = @import("rpc/controller.zig");
 const terminal = @import("terminal");
 const terminal_screen = @import("terminal_screen.zig");
 
@@ -12,6 +13,7 @@ pub const Controller = struct {
     io: std.Io,
     environment: *const std.process.Environ.Map,
     manager: terminal.Manager,
+    rpc: ?rpc_controller.Controller = null,
     active_id: ?terminal.TerminalId = null,
     screen_state: ?terminal_screen.Screen = null,
     visible: bool = false,
@@ -39,7 +41,13 @@ pub const Controller = struct {
         self.registered = true;
     }
 
+    pub fn attachRpc(self: *Controller, api: *api_module.Api, editor: *editor_module.Editor, endpoint: []const u8) !void {
+        if (self.rpc != null) return error.RpcAlreadyAttached;
+        self.rpc = try rpc_controller.Controller.init(self.allocator, api, editor, endpoint);
+    }
+
     pub fn deinit(self: *Controller, api: *api_module.Api) void {
+        if (self.rpc) |*rpc| rpc.deinit();
         if (self.registered) _ = api.commandDelete("terminal");
         if (self.screen_state) |*screen_value| screen_value.deinit();
         self.manager.deinit();
@@ -103,8 +111,12 @@ pub const Controller = struct {
     }
 
     pub fn poll(self: *Controller) !bool {
-        const id = self.active_id orelse return false;
-        var changed = try self.manager.poll(id);
+        var changed = false;
+        if (self.rpc) |*rpc| {
+            if (try rpc.poll()) changed = true;
+        }
+        const id = self.active_id orelse return changed;
+        if (try self.manager.poll(id)) changed = true;
         if (self.syncOutput(id)) changed = true;
         return changed;
     }
