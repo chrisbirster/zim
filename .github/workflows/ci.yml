@@ -49,16 +49,22 @@ jobs:
       - name: Test Windows PTY child lifecycle
         if: runner.os == 'Windows'
         timeout-minutes: 2
+        env:
+          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zim-pty-child-cache
         run: zig test src/pty.zig --test-filter "PTY runs a child"
 
       - name: Test Windows PTY nonblocking lifecycle
         if: runner.os == 'Windows'
         timeout-minutes: 2
+        env:
+          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zim-pty-nonblocking-cache
         run: zig test src/pty.zig --test-filter "PTY exposes nonblocking"
 
       - name: Test Windows terminal manager lifecycle
         if: runner.os == 'Windows'
         timeout-minutes: 2
+        env:
+          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zim-terminal-cache
         run: zig test src/terminal.zig
 
       - name: Test pure Zig editor/headless core
