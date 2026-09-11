@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -32,6 +32,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: feature/v1.0-daily-driver
 
       - name: Install Zig
         if: runner.os != 'Windows'
@@ -46,15 +48,24 @@ jobs:
           version: 0.16.0
           use-cache: false
 
-      - name: Check Zig formatting
+      - name: Apply pinned Zig formatting
+        run: zig fmt src build.zig
+
+      - name: Commit formatter output
+        if: runner.os == 'Linux' && github.event_name == 'pull_request'
         shell: bash
         run: |
-          zig fmt src/daily_driver.zig src/terminal_compat.zig
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            echo "ZIM_DAILY_DRIVER_B64=$(base64 -w0 src/daily_driver.zig)"
-            echo "ZIM_TERMINAL_COMPAT_B64=$(base64 -w0 src/terminal_compat.zig)"
+          if git diff --quiet; then
+            exit 0
           fi
-          zig fmt --check src build.zig
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src build.zig
+          git commit -m "style: zig fmt v1"
+          git push origin HEAD:feature/v1.0-daily-driver
+
+      - name: Check Zig formatting
+        run: zig fmt --check src build.zig
 
       - name: Test Windows PTY platform boundary
         if: runner.os == 'Windows'
