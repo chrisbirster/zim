@@ -99,7 +99,7 @@ pub const Service = struct {
     pub fn destroy(self: *Service) void {
         const allocator = self.allocator;
         const command_names = [_][]const u8{
-            "Help", "help", "Errors", "Checkhealth", "SessionSave", "SessionRestore",
+            "Help",          "help",            "Errors",          "Checkhealth", "SessionSave", "SessionRestore",
             "RecoveryWrite", "RecoveryRestore", "RecoveryDiscard", "Colorscheme", "Highlight",
         };
         for (command_names) |name| _ = self.api.commandDelete(name);
@@ -319,15 +319,7 @@ pub const Service = struct {
                 style.foreground = try parseAnsi(token[3..]);
             } else if (std.mem.startsWith(u8, token, "bg=")) {
                 style.background = try parseAnsi(token[3..]);
-            } else if (std.mem.eql(u8, token, "bold")) style.bold = true
-            else if (std.mem.eql(u8, token, "italic")) style.italic = true
-            else if (std.mem.eql(u8, token, "dim")) style.dim = true
-            else if (std.mem.eql(u8, token, "underline")) style.underline = true
-            else if (std.mem.eql(u8, token, "nobold")) style.bold = false
-            else if (std.mem.eql(u8, token, "noitalic")) style.italic = false
-            else if (std.mem.eql(u8, token, "nodim")) style.dim = false
-            else if (std.mem.eql(u8, token, "nounderline")) style.underline = false
-            else return error.Usage;
+            } else if (std.mem.eql(u8, token, "bold")) style.bold = true else if (std.mem.eql(u8, token, "italic")) style.italic = true else if (std.mem.eql(u8, token, "dim")) style.dim = true else if (std.mem.eql(u8, token, "underline")) style.underline = true else if (std.mem.eql(u8, token, "nobold")) style.bold = false else if (std.mem.eql(u8, token, "noitalic")) style.italic = false else if (std.mem.eql(u8, token, "nodim")) style.dim = false else if (std.mem.eql(u8, token, "nounderline")) style.underline = false else return error.Usage;
         }
         if (!saw_option) return error.Usage;
         try self.theme.set(group, style);

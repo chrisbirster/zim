@@ -27,9 +27,7 @@ pub fn inspect(environment: *const std.process.Environ.Map) Report {
     const program = environment.get("TERM_PROGRAM");
     const family: Family = if (environment.get("WT_SESSION") != null)
         .windows_terminal
-    else if (program) |value| classifyProgram(value, term)
-    else
-        classifyTerm(term);
+    else if (program) |value| classifyProgram(value, term) else classifyTerm(term);
     return .{
         .family = if (environment.get("TMUX") != null and family == .screen) .tmux else family,
         .term = term,
