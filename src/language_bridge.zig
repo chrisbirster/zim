@@ -198,7 +198,7 @@ pub const State = struct {
     }
 
     fn removeCache(self: *State, buffer_id: buffer_module.BufferId) void {
-        const index = self.cacheIndex(buffer.id) orelse return;
+        const index = self.cacheIndex(buffer_id) orelse return;
         var removed = self.caches.swapRemove(index);
         removed.deinit();
     }
