@@ -788,7 +788,7 @@ test "embedded Lua exposes options keymaps commands and autocommands" {
     defer runtime.deinit();
 
     try runtime.eval(
-        \\assert(zim.version == '0.7.0')
+        \\assert(zim.version == '1.0.0')
         \\zim.opt.number = true
         \\zim.opt.tabstop = 8
         \\zim.keymap.set('normal', 'z', 'i')
