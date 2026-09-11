@@ -4,7 +4,7 @@ const editor_module = @import("../editor.zig");
 const msgpack = @import("msgpack.zig");
 const protocol = @import("protocol.zig");
 
-pub const zim_version = "0.9.0";
+pub const zim_version = "1.0.0";
 
 const capability_names = [_][]const u8{
     "buffers",

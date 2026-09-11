@@ -201,7 +201,7 @@ pub const Runtime = struct {
         };
 
         self.lua.createTable(0, 2);
-        _ = self.lua.pushString("0.7.0");
+        _ = self.lua.pushString("1.0.0");
         self.lua.setField(-2, "version");
         self.lua.newLib(&native_fns);
         self.lua.setField(-2, "_native");

@@ -1,6 +1,7 @@
 const std = @import("std");
 const hondo = @import("hondo");
 const editor_module = @import("editor.zig");
+const theme_module = @import("theme.zig");
 
 pub const native_type = "zim.editor";
 
@@ -324,10 +325,11 @@ fn paintWindow(
             else
                 cursor_position.line - line_number;
             const number = std.fmt.bufPrint(&number_buffer, "{d} ", .{display_number}) catch "";
-            try grid.paintUtf8Styled(bounds.x, bounds.y + row, number, gutter, .{
-                .foreground = if (current_line) .{ .ansi = 13 } else .{ .ansi = 8 },
-                .attributes = .{ .dim = !current_line },
-            });
+            const line_style = if (current_line)
+                themedStyle("CursorLineNr", .{ .foreground = .{ .ansi = 13 } })
+            else
+                themedStyle("LineNr", .{ .foreground = .{ .ansi = 8 }, .attributes = .{ .dim = true } });
+            try grid.paintUtf8Styled(bounds.x, bounds.y + row, number, gutter, line_style);
         }
 
         if (line_start > buffer.text.items.len) break;
@@ -453,7 +455,13 @@ fn paintExtmarks(
             if (mark.virtual_text) |annotation| {
                 const used = hondo.cell_grid.displayWidth(line);
                 if (used + 1 < content_width) {
-                    try grid.paintUtf8Styled(content_x + used + 1, y, annotation, content_width - used - 1, .{ .foreground = .{ .ansi = 8 }, .attributes = .{ .italic = true, .dim = true } });
+                    try grid.paintUtf8Styled(
+                        content_x + used + 1,
+                        y,
+                        annotation,
+                        content_width - used - 1,
+                        themedStyle("VirtualText", .{ .foreground = .{ .ansi = 8 }, .attributes = .{ .italic = true, .dim = true } }),
+                    );
                 }
             }
         }
@@ -461,31 +469,49 @@ fn paintExtmarks(
 }
 
 fn extmarkStyle(name: ?[]const u8) @TypeOf((hondo.cell_grid.Cell{}).style) {
-    const value = name orelse return .{ .foreground = .{ .ansi = 13 } };
+    const value = name orelse return themedStyle("PluginAccent", .{ .foreground = .{ .ansi = 13 } });
+    if (theme_module.activeStyle(value) != null) return themedStyle(value, .{});
     if (std.mem.eql(u8, value, "DiagnosticError")) return .{ .foreground = .{ .ansi = 9 }, .attributes = .{ .bold = true } };
     if (std.mem.eql(u8, value, "DiagnosticWarn")) return .{ .foreground = .{ .ansi = 11 }, .attributes = .{ .bold = true } };
     if (std.mem.eql(u8, value, "DiagnosticInfo")) return .{ .foreground = .{ .ansi = 14 } };
     if (std.mem.eql(u8, value, "DiagnosticHint")) return .{ .foreground = .{ .ansi = 8 }, .attributes = .{ .italic = true } };
-    return .{ .foreground = .{ .ansi = 13 } };
+    return themedStyle("PluginAccent", .{ .foreground = .{ .ansi = 13 } });
 }
 
 fn syntaxStyle(capture: []const u8) @TypeOf((hondo.cell_grid.Cell{}).style) {
-    if (std.mem.indexOf(u8, capture, "comment") != null) return .{
-        .foreground = .{ .ansi = 8 },
-        .attributes = .{ .italic = true },
-    };
-    if (std.mem.indexOf(u8, capture, "string") != null) return .{ .foreground = .{ .ansi = 10 } };
-    if (std.mem.indexOf(u8, capture, "keyword") != null) return .{
-        .foreground = .{ .ansi = 13 },
-        .attributes = .{ .bold = true },
-    };
-    if (std.mem.indexOf(u8, capture, "function") != null) return .{ .foreground = .{ .ansi = 14 } };
-    if (std.mem.indexOf(u8, capture, "type") != null) return .{ .foreground = .{ .ansi = 12 } };
-    if (std.mem.indexOf(u8, capture, "number") != null or std.mem.indexOf(u8, capture, "constant") != null) {
-        return .{ .foreground = .{ .ansi = 11 } };
-    }
-    if (std.mem.indexOf(u8, capture, "operator") != null) return .{ .foreground = .{ .ansi = 6 } };
-    return .{};
+    const fallback: @TypeOf((hondo.cell_grid.Cell{}).style) = if (std.mem.indexOf(u8, capture, "comment") != null)
+        .{ .foreground = .{ .ansi = 8 }, .attributes = .{ .italic = true } }
+    else if (std.mem.indexOf(u8, capture, "string") != null)
+        .{ .foreground = .{ .ansi = 10 } }
+    else if (std.mem.indexOf(u8, capture, "keyword") != null)
+        .{ .foreground = .{ .ansi = 13 }, .attributes = .{ .bold = true } }
+    else if (std.mem.indexOf(u8, capture, "function") != null)
+        .{ .foreground = .{ .ansi = 14 } }
+    else if (std.mem.indexOf(u8, capture, "type") != null)
+        .{ .foreground = .{ .ansi = 12 } }
+    else if (std.mem.indexOf(u8, capture, "number") != null or std.mem.indexOf(u8, capture, "constant") != null)
+        .{ .foreground = .{ .ansi = 11 } }
+    else if (std.mem.indexOf(u8, capture, "operator") != null)
+        .{ .foreground = .{ .ansi = 6 } }
+    else
+        .{};
+    const group = theme_module.groupForCapture(capture) orelse return fallback;
+    return themedStyle(group, fallback);
+}
+
+fn themedStyle(
+    group: []const u8,
+    fallback: @TypeOf((hondo.cell_grid.Cell{}).style),
+) @TypeOf((hondo.cell_grid.Cell{}).style) {
+    const source = theme_module.activeStyle(group) orelse return fallback;
+    var result: @TypeOf((hondo.cell_grid.Cell{}).style) = .{};
+    if (source.foreground) |foreground| result.foreground = .{ .ansi = @intCast(foreground) };
+    if (source.background) |background| result.background = .{ .ansi = @intCast(background) };
+    result.attributes.bold = source.bold;
+    result.attributes.italic = source.italic;
+    result.attributes.dim = source.dim;
+    result.attributes.underline = source.underline;
+    return result;
 }
 
 fn ensureCursorVisible(editor: *editor_module.Editor, window_id: editor_module.WindowId, viewport_height: usize) void {
@@ -685,6 +711,19 @@ test "Zim EditorView handles 10000 insert keys without JavaScript dispatch" {
     const end = std.Io.Clock.Timestamp.now(std.testing.io, .awake);
     try std.testing.expectEqual(iterations, editor.text().len);
     try std.testing.expect(start.durationTo(end).raw.toNanoseconds() > 0);
+}
+
+test "native renderer styles follow the active v1 theme registry" {
+    var store = theme_module.Store.init(std.testing.allocator);
+    defer store.deinit();
+    try store.load("zim");
+    theme_module.activate(&store);
+    defer theme_module.deactivate(&store);
+
+    try store.set("Keyword", .{ .foreground = 2, .italic = true });
+    const style = syntaxStyle("keyword.function");
+    try std.testing.expect(style.foreground.eql(.{ .ansi = 2 }));
+    try std.testing.expect(style.attributes.italic);
 }
 
 test "split layout paints two native editor windows with a divider" {
