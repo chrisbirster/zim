@@ -133,13 +133,14 @@ pub fn build(b: *std.Build) void {
         return;
     }
 
-    // Bellard QuickJS 2026-06-04 trips ReleaseSafe UB instrumentation during
-    // bytecode label resolution on macOS/arm64. Keep the Zim executable
-    // ReleaseSafe while compiling Hondo/QuickJS as ReleaseFast on macOS. This
-    // avoids the engine-side trap without pulling Debug UBSan runtime symbols
-    // into the release executable. CI exercises the resulting ReleaseSafe Zim
-    // binary through a real interactive PTY startup smoke test.
-    const hondo_optimize: std.builtin.OptimizeMode = if (target.result.os.tag == .macos and optimize == .ReleaseSafe)
+    // Hondo currently crosses C translation/runtime paths that Zig 0.16 does
+    // not handle reliably under ReleaseSafe: Bellard QuickJS trips UB
+    // instrumentation on macOS/arm64, and glibc's fortified poll wrapper does
+    // not translate cleanly on Linux. Keep Zim's editor/application code
+    // ReleaseSafe while building the embedded Hondo runtime as ReleaseFast.
+    // The exact resulting executable is exercised by interactive, integration,
+    // RPC, packaging, performance, and full-suite CI gates.
+    const hondo_optimize: std.builtin.OptimizeMode = if (optimize == .ReleaseSafe)
         .ReleaseFast
     else
         optimize;
