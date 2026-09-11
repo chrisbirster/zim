@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: package-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+          use-cache: false
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install UI dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Bundle Solid/Hondo UI
+        run: npm run build:ui
+
+      - name: Build ReleaseSafe Zim
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Verify packaged binary
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ./zig-out/bin/zim.exe --version
+            ./zig-out/bin/zim.exe --check
+          else
+            ./zig-out/bin/zim --version
+            ./zig-out/bin/zim --check
+          fi
+
+      - name: Package archive
+        run: python scripts/package_release.py
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: zim-${{ runner.os }}-${{ runner.arch }}
+          path: dist/*
+          if-no-files-found: error
