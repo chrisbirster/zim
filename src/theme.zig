@@ -36,17 +36,17 @@ pub const Store = struct {
         self.* = undefined;
     }
 
-    pub fn load(self: *Store, scheme: []const u8) !void {
+    pub fn load(self: *Store, scheme_name: []const u8) !void {
         self.clear();
         self.name.items.len = 0;
-        if (std.mem.eql(u8, scheme, "zim")) {
+        if (std.mem.eql(u8, scheme_name, "zim")) {
             try self.loadZim();
-        } else if (std.mem.eql(u8, scheme, "mono")) {
+        } else if (std.mem.eql(u8, scheme_name, "mono")) {
             try self.loadMono();
-        } else if (std.mem.eql(u8, scheme, "ember")) {
+        } else if (std.mem.eql(u8, scheme_name, "ember")) {
             try self.loadEmber();
         } else return error.UnknownColorscheme;
-        try self.name.appendSlice(self.allocator, scheme);
+        try self.name.appendSlice(self.allocator, scheme_name);
         self.revision +%= 1;
     }
 
