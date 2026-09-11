@@ -106,10 +106,19 @@ jobs:
       - name: Build Zim
         run: zig build
 
-      - name: Install Python for RPC smoke
+      - name: Install Python for RPC smoke and benchmarks
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Daily Driver performance gate
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            python scripts/benchmark.py ./zig-out/bin/zim.exe
+          else
+            python scripts/benchmark.py ./zig-out/bin/zim
+          fi
 
       - name: Test MessagePack-RPC process boundary
         timeout-minutes: 2
