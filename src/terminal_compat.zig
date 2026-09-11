@@ -23,17 +23,37 @@ pub const Report = struct {
 };
 
 pub fn inspect(environment: *const std.process.Environ.Map) Report {
-    const term = environment.get("TERM") orelse "unknown";
-    const program = environment.get("TERM_PROGRAM");
-    const family: Family = if (environment.get("WT_SESSION") != null)
+    return inspectValues(
+        environment.get("TERM") orelse "unknown",
+        environment.get("TERM_PROGRAM"),
+        environment.get("WT_SESSION") != null,
+        environment.get("COLORTERM"),
+        environment.get("SSH_CONNECTION") != null or environment.get("SSH_TTY") != null,
+        environment.get("TMUX") != null,
+    );
+}
+
+pub fn inspectValues(
+    term: []const u8,
+    program: ?[]const u8,
+    windows_terminal: bool,
+    color_term: ?[]const u8,
+    under_ssh: bool,
+    under_tmux: bool,
+) Report {
+    const base_family: Family = if (windows_terminal)
         .windows_terminal
-    else if (program) |value| classifyProgram(value, term) else classifyTerm(term);
+    else if (program) |value|
+        classifyProgram(value, term)
+    else
+        classifyTerm(term);
+    const family = if (under_tmux and base_family == .screen) .tmux else base_family;
     return .{
-        .family = if (environment.get("TMUX") != null and family == .screen) .tmux else family,
+        .family = family,
         .term = term,
-        .color_term = environment.get("COLORTERM"),
-        .under_ssh = environment.get("SSH_CONNECTION") != null or environment.get("SSH_TTY") != null,
-        .under_tmux = environment.get("TMUX") != null,
+        .color_term = color_term,
+        .under_ssh = under_ssh,
+        .under_tmux = under_tmux,
         .interactive_color = family != .dumb and !std.mem.eql(u8, term, "dumb"),
     };
 }
@@ -62,4 +82,21 @@ test "terminal families cover the v1 compatibility matrix" {
     try std.testing.expectEqual(Family.screen, classifyTerm("screen-256color"));
     try std.testing.expectEqual(Family.xterm, classifyTerm("xterm-256color"));
     try std.testing.expectEqual(Family.dumb, classifyTerm("dumb"));
+}
+
+test "SSH and tmux context remain explicit while terminal capability is classified" {
+    const tmux_over_ssh = inspectValues("screen-256color", null, false, "truecolor", true, true);
+    try std.testing.expectEqual(Family.tmux, tmux_over_ssh.family);
+    try std.testing.expect(tmux_over_ssh.under_ssh);
+    try std.testing.expect(tmux_over_ssh.under_tmux);
+    try std.testing.expect(tmux_over_ssh.interactive_color);
+
+    const wezterm_over_ssh = inspectValues("xterm-256color", "WezTerm", false, "truecolor", true, false);
+    try std.testing.expectEqual(Family.wezterm, wezterm_over_ssh.family);
+    try std.testing.expect(wezterm_over_ssh.under_ssh);
+    try std.testing.expect(!wezterm_over_ssh.under_tmux);
+
+    const dumb = inspectValues("dumb", null, false, null, false, false);
+    try std.testing.expectEqual(Family.dumb, dumb.family);
+    try std.testing.expect(!dumb.interactive_color);
 }
