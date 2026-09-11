@@ -8,13 +8,41 @@ pub const native_type = "zim.editor";
 const BindError = error{NoBoundEditor};
 const gutter_width: usize = 6;
 const scrolloff: usize = 8;
+const max_tree_entries: usize = 2048;
 
 var bound_editor: ?*editor_module.Editor = null;
 
+const ViewRole = enum {
+    editor,
+    project_tree,
+};
+
+const ViewProps = struct {
+    role: ?[]const u8 = null,
+    refreshNonce: u64 = 0,
+};
+
+const TreeEntry = struct {
+    path: []u8,
+    is_dir: bool,
+    depth: usize,
+
+    fn deinit(self: *TreeEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        self.* = undefined;
+    }
+};
+
 const State = struct {
     editor: *editor_module.Editor,
+    role: ViewRole = .editor,
     last_bounds: hondo.native_view.Bounds = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
     has_bounds: bool = false,
+    props_initialized: bool = false,
+    refresh_nonce: u64 = 0,
+    tree_entries: std.ArrayList(TreeEntry) = .empty,
+    tree_selected: usize = 0,
+    tree_scroll: usize = 0,
 };
 
 const CoarseState = struct {
@@ -55,15 +83,29 @@ fn create(
     props_json: []const u8,
 ) !?*anyopaque {
     _ = context;
-    _ = props_json;
     const editor = bound_editor orelse return BindError.NoBoundEditor;
     const state = try allocator.create(State);
     state.* = .{ .editor = editor };
+    errdefer allocator.destroy(state);
+
+    if (props_json.len != 0) {
+        const parsed = std.json.parseFromSlice(ViewProps, allocator, props_json, .{ .ignore_unknown_fields = true }) catch null;
+        if (parsed) |value| {
+            defer value.deinit();
+            if (value.value.role) |role| {
+                if (std.mem.eql(u8, role, "project-tree")) state.role = .project_tree;
+            }
+            state.refresh_nonce = value.value.refreshNonce;
+        }
+    }
+    if (state.role == .project_tree) try reloadProjectTree(state);
     return state;
 }
 
 fn destroy(allocator: std.mem.Allocator, state_ptr: ?*anyopaque) void {
     const state: *State = @ptrCast(@alignCast(state_ptr orelse return));
+    clearProjectTree(state, allocator);
+    state.tree_entries.deinit(allocator);
     allocator.destroy(state);
 }
 
@@ -87,8 +129,13 @@ fn paint(
     const state: *State = @ptrCast(@alignCast(state_ptr orelse return));
     state.last_bounds = bounds;
     state.has_bounds = true;
-    const tab = state.editor.activeTabConst();
-    try paintLayout(state.editor, grid, tab, tab.root, bounds);
+    switch (state.role) {
+        .editor => {
+            const tab = state.editor.activeTabConst();
+            try paintLayout(state.editor, grid, tab, tab.root, bounds);
+        },
+        .project_tree => try paintProjectTree(state, grid, bounds),
+    }
 }
 
 fn updateProps(
@@ -96,9 +143,20 @@ fn updateProps(
     context: hondo.native_view.Context,
     props_json: []const u8,
 ) !void {
-    _ = state_ptr;
-    _ = context;
-    _ = props_json;
+    const state: *State = @ptrCast(@alignCast(state_ptr orelse return));
+    const parsed = try std.json.parseFromSlice(ViewProps, state.editor.allocator, props_json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    if (state.role == .project_tree and parsed.value.refreshNonce != state.refresh_nonce) {
+        state.refresh_nonce = parsed.value.refreshNonce;
+        try reloadProjectTree(state);
+        context.invalidate();
+    }
+
+    if (!state.props_initialized) {
+        state.props_initialized = true;
+        try publishState(state, context);
+    }
 }
 
 fn input(
@@ -107,10 +165,16 @@ fn input(
     event: hondo.terminal.input.Event,
 ) !hondo.native_view.InputResult {
     const state: *State = @ptrCast(@alignCast(state_ptr orelse return .ignored));
-    return switch (event) {
-        .key => |key| try handleKey(state, context, key),
-        .mouse => |mouse| try handleMouse(state, context, mouse),
-        .focus => .ignored,
+    return switch (state.role) {
+        .editor => switch (event) {
+            .key => |key| try handleKey(state, context, key),
+            .mouse => |mouse| try handleMouse(state, context, mouse),
+            .focus => .ignored,
+        },
+        .project_tree => switch (event) {
+            .key => |key| try handleProjectTreeKey(state, context, key),
+            .mouse, .focus => .ignored,
+        },
     };
 }
 
@@ -127,6 +191,167 @@ fn handleKey(
     const after = captureCoarseState(state.editor);
     if (shouldPublishKeyState(before, after)) try publishState(state, context);
     return .handled;
+}
+
+fn handleProjectTreeKey(
+    state: *State,
+    context: hondo.native_view.Context,
+    key: hondo.terminal.input.Key,
+) !hondo.native_view.InputResult {
+    if (state.tree_entries.items.len == 0) {
+        return switch (key) {
+            .escape => blk: {
+                try context.notify("{\"treeClose\":true}");
+                break :blk .handled;
+            },
+            .codepoint => |cp| if (cp == 'r') blk: {
+                try reloadProjectTree(state);
+                context.invalidate();
+                break :blk .handled;
+            } else .ignored,
+            else => .ignored,
+        };
+    }
+
+    const moved = switch (key) {
+        .down => moveTreeSelection(state, 1),
+        .up => moveTreeSelection(state, -1),
+        .codepoint => |cp| if (cp == 'j') moveTreeSelection(state, 1) else if (cp == 'k') moveTreeSelection(state, -1) else false,
+        else => false,
+    };
+    if (moved) {
+        context.invalidate();
+        return .handled;
+    }
+
+    return switch (key) {
+        .enter => blk: {
+            const entry = &state.tree_entries.items[state.tree_selected];
+            if (entry.is_dir) {
+                state.editor.setStatus("directory is already expanded: {s}", .{entry.path});
+                try publishState(state, context);
+                break :blk .handled;
+            }
+            const root = state.editor.pinProjectRoot();
+            const target = if (std.mem.eql(u8, root, "."))
+                try state.editor.allocator.dupe(u8, entry.path)
+            else
+                try std.fs.path.join(state.editor.allocator, &.{ root, entry.path });
+            defer state.editor.allocator.free(target);
+            if (try state.editor.editPath(target)) {
+                context.invalidate();
+                try publishState(state, context);
+                try context.notify("{\"treeOpenedFile\":true}");
+            }
+            break :blk .handled;
+        },
+        .escape => blk: {
+            try context.notify("{\"treeClose\":true}");
+            break :blk .handled;
+        },
+        .codepoint => |cp| if (cp == 'r') blk: {
+            try reloadProjectTree(state);
+            context.invalidate();
+            break :blk .handled;
+        } else .ignored,
+        else => .ignored,
+    };
+}
+
+fn moveTreeSelection(state: *State, direction: i8) bool {
+    if (state.tree_entries.items.len == 0) return false;
+    if (direction < 0) {
+        state.tree_selected = if (state.tree_selected == 0) state.tree_entries.items.len - 1 else state.tree_selected - 1;
+    } else {
+        state.tree_selected = (state.tree_selected + 1) % state.tree_entries.items.len;
+    }
+    return true;
+}
+
+fn reloadProjectTree(state: *State) !void {
+    clearProjectTree(state, state.editor.allocator);
+    state.tree_selected = 0;
+    state.tree_scroll = 0;
+
+    const root = state.editor.pinProjectRoot();
+    var dir = std.Io.Dir.cwd().openDir(state.editor.io, root, .{ .iterate = true }) catch |err| {
+        state.editor.setStatus("project tree failed: {s}", .{@errorName(err)});
+        return;
+    };
+    defer dir.close(state.editor.io);
+
+    var walker = try dir.walk(state.editor.allocator);
+    defer walker.deinit();
+    while (state.tree_entries.items.len < max_tree_entries) {
+        const entry = (try walker.next(state.editor.io)) orelse break;
+        const path = try state.editor.allocator.dupe(u8, entry.path);
+        errdefer state.editor.allocator.free(path);
+        try state.tree_entries.append(state.editor.allocator, .{
+            .path = path,
+            .is_dir = entry.kind == .directory,
+            .depth = pathDepth(entry.path),
+        });
+    }
+}
+
+fn clearProjectTree(state: *State, allocator: std.mem.Allocator) void {
+    for (state.tree_entries.items) |*entry| entry.deinit(allocator);
+    state.tree_entries.items.len = 0;
+}
+
+fn pathDepth(path: []const u8) usize {
+    var depth: usize = 0;
+    for (path) |byte| if (byte == '/' or byte == '\\') depth += 1;
+    return depth;
+}
+
+fn baseName(path: []const u8) []const u8 {
+    var index: usize = 0;
+    for (path, 0..) |byte, position| {
+        if (byte == '/' or byte == '\\') index = position + 1;
+    }
+    return path[index..];
+}
+
+fn paintProjectTree(
+    state: *State,
+    grid: *hondo.cell_grid.CellGrid,
+    bounds: hondo.native_view.Bounds,
+) !void {
+    if (bounds.width == 0 or bounds.height == 0) return;
+    try grid.paintUtf8Styled(bounds.x, bounds.y, "FILES", bounds.width, themedStyle("Title", .{ .foreground = .{ .ansi = 14 }, .attributes = .{ .bold = true } }));
+    if (bounds.height == 1) return;
+    try grid.paintUtf8Styled(bounds.x, bounds.y + 1, "j/k move · Enter open · r refresh", bounds.width, .{ .foreground = .{ .ansi = 8 }, .attributes = .{ .dim = true } });
+    if (bounds.height <= 2) return;
+
+    const body_height = bounds.height - 2;
+    if (state.tree_selected < state.tree_scroll) state.tree_scroll = state.tree_selected;
+    if (state.tree_selected >= state.tree_scroll + body_height) {
+        state.tree_scroll = state.tree_selected - body_height + 1;
+    }
+
+    var row: usize = 0;
+    while (row < body_height) : (row += 1) {
+        const entry_index = state.tree_scroll + row;
+        if (entry_index >= state.tree_entries.items.len) break;
+        const entry = state.tree_entries.items[entry_index];
+        var indent_buffer: [32]u8 = undefined;
+        const indent_len = @min(entry.depth * 2, indent_buffer.len);
+        @memset(indent_buffer[0..indent_len], ' ');
+        var line_buffer: [512]u8 = undefined;
+        const label = std.fmt.bufPrint(
+            &line_buffer,
+            "{s}{s}{s}",
+            .{ indent_buffer[0..indent_len], if (entry.is_dir) "+ " else "  ", baseName(entry.path) },
+        ) catch baseName(entry.path);
+        const selected = entry_index == state.tree_selected;
+        try grid.paintUtf8Styled(bounds.x, bounds.y + 2 + row, label, bounds.width, if (selected)
+            .{ .foreground = .{ .ansi = 14 }, .attributes = .{ .reverse = true, .bold = true } }
+        else if (entry.is_dir)
+            .{ .foreground = .{ .ansi = 12 }, .attributes = .{ .bold = true } }
+        else
+            .{});
+    }
 }
 
 fn captureCoarseState(editor: *const editor_module.Editor) CoarseState {
@@ -380,15 +605,6 @@ fn paintWindow(
         }
 
         if (end >= buffer.text.items.len) {
-            if (row == 0 and line.len == 0 and content_width > 0) {
-                try grid.paintUtf8Styled(
-                    bounds.x + gutter,
-                    bounds.y,
-                    "[No Name] — i insert  : command",
-                    content_width,
-                    .{ .attributes = .{ .dim = true } },
-                );
-            }
             break;
         }
         line_start = end + 1;
@@ -602,7 +818,7 @@ fn publishState(state: *State, context: hondo.native_view.Context) !void {
         .commandText = command,
         .status = state.editor.status(),
         .path = state.editor.currentPath() orelse "[No Name]",
-        .project = state.editor.project_root orelse "",
+        .project = state.editor.pinProjectRoot(),
         .buffers = state.editor.buffers.items.len,
         .windows = state.editor.activeTab().window_ids.items.len,
         .tabs = state.editor.tabs.items.len,
