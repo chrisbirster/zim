@@ -47,9 +47,17 @@ pub fn build(b: *std.Build) void {
     });
     if (is_linux) terminal_module.addCMacro("_FORTIFY_SOURCE", "0");
 
+    // Zig 0.16 ReleaseSafe rejects translated Windows CRT helpers emitted by
+    // ZLua's C-import layer as unused locals. Keep Zim itself ReleaseSafe while
+    // compiling only this third-party C-heavy dependency as ReleaseFast on
+    // Windows. Native Zim editor/application modules retain ReleaseSafe checks.
+    const zlua_optimize: std.builtin.OptimizeMode = if (target.result.os.tag == .windows and optimize == .ReleaseSafe)
+        .ReleaseFast
+    else
+        optimize;
     const zlua_dep = b.dependency("zlua", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = zlua_optimize,
         .lang = .lua54,
     });
     const zlua = zlua_dep.module("zlua");
