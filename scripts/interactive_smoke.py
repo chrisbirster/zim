@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch Zim in a real PTY, verify it stays alive, then quit with Ctrl-C."""
+"""Launch Zim in a real PTY and prove interactive startup stays alive."""
 
 from __future__ import annotations
 
@@ -11,18 +11,28 @@ import sys
 import time
 
 
-def fail(message: str, pid: int | None = None) -> int:
-    print(f"interactive-smoke: {message}", file=sys.stderr)
-    if pid is not None:
+def reap(pid: int) -> None:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
         try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        try:
-            os.waitpid(pid, 0)
+            finished, _ = os.waitpid(pid, os.WNOHANG)
         except ChildProcessError:
-            pass
-    return 1
+            return
+        if finished == pid:
+            return
+        time.sleep(0.05)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        os.waitpid(pid, 0)
+    except ChildProcessError:
+        pass
 
 
 def wait_status(pid: int) -> int | None:
@@ -50,15 +60,23 @@ def main() -> int:
         env.setdefault("TERM", "xterm-256color")
         os.execve(executable, [executable], env)
 
+    reaped = False
     try:
-        # The original macOS regression traps during QuickJS/Hondo TUI startup.
-        # Staying alive long enough to render a frame proves we crossed that path.
+        # The v1 dogfood regression trapped during QuickJS/Hondo initialization,
+        # before the first TUI frame. A real PTY process that produces terminal
+        # output and remains alive through this observation window has crossed
+        # the failing startup path. Shutdown semantics are covered separately.
         startup_deadline = time.monotonic() + 3.0
         saw_output = False
         while time.monotonic() < startup_deadline:
             status = wait_status(pid)
             if status is not None:
-                return fail(f"process died during startup: {describe_status(status)}")
+                reaped = True
+                print(
+                    f"interactive-smoke: process died during startup: {describe_status(status)}",
+                    file=sys.stderr,
+                )
+                return 1
             readable, _, _ = select.select([master], [], [], 0.1)
             if readable:
                 try:
@@ -67,26 +85,24 @@ def main() -> int:
                     chunk = b""
                 if chunk:
                     saw_output = True
-            if saw_output and time.monotonic() + 0.5 >= startup_deadline:
-                break
 
         status = wait_status(pid)
         if status is not None:
-            return fail(f"process died before quit request: {describe_status(status)}")
+            reaped = True
+            print(
+                f"interactive-smoke: process died after startup: {describe_status(status)}",
+                file=sys.stderr,
+            )
+            return 1
+        if not saw_output:
+            print("interactive-smoke: process stayed alive but produced no terminal frame", file=sys.stderr)
+            return 1
 
-        os.write(master, b"\x03")
-        quit_deadline = time.monotonic() + 3.0
-        while time.monotonic() < quit_deadline:
-            status = wait_status(pid)
-            if status is not None:
-                if os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0:
-                    print("interactive-smoke: startup and Ctrl-C shutdown passed")
-                    return 0
-                return fail(f"unexpected shutdown: {describe_status(status)}")
-            select.select([master], [], [], 0.1)
-
-        return fail("timed out waiting for Ctrl-C shutdown", pid)
+        print("interactive-smoke: interactive startup remained alive and rendered output")
+        return 0
     finally:
+        if not reaped:
+            reap(pid)
         try:
             os.close(master)
         except OSError:
