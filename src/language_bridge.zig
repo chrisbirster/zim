@@ -9,6 +9,8 @@ pub const StructuralKind = language.StructuralObjectKind;
 pub const ObjectScope = language.ObjectScope;
 pub const MotionDirection = language.MotionDirection;
 
+pub const max_structural_bytes: usize = 2 * 1024 * 1024;
+
 pub const ByteRange = struct {
     start: usize,
     end: usize,
@@ -50,6 +52,12 @@ pub const State = struct {
     }
 
     pub fn syncBuffer(self: *State, buffer: *const buffer_module.Buffer, force: bool) !void {
+        if (buffer.text.items.len > max_structural_bytes) {
+            _ = self.service.close(@intCast(buffer.id));
+            self.removeCache(buffer.id);
+            return;
+        }
+
         const language_id = self.languageForPath(buffer.path) orelse {
             _ = self.service.close(@intCast(buffer.id));
             self.removeCache(buffer.id);
@@ -190,7 +198,7 @@ pub const State = struct {
     }
 
     fn removeCache(self: *State, buffer_id: buffer_module.BufferId) void {
-        const index = self.cacheIndex(buffer_id) orelse return;
+        const index = self.cacheIndex(buffer.id) orelse return;
         var removed = self.caches.swapRemove(index);
         removed.deinit();
     }
@@ -247,4 +255,24 @@ test "bridge syncs revisions and caches structural language data" {
     buffer.markChanged();
     try state.syncBuffer(&buffer, false);
     try std.testing.expectEqual(buffer.revision, state.revision(buffer.id).?);
+}
+
+test "oversized buffers skip structural indexing instead of blocking file open" {
+    const allocator = std.testing.allocator;
+    const text = try allocator.alloc(u8, max_structural_bytes + 1);
+    defer allocator.free(text);
+    @memset(text, 'x');
+
+    var buffer = try buffer_module.Buffer.init(allocator, 1, "large.zig");
+    defer buffer.deinit(allocator);
+    try buffer.setLoadedText(allocator, text);
+
+    var state = try State.init(allocator);
+    defer state.deinit();
+    try state.syncBuffer(&buffer, true);
+
+    try std.testing.expectEqual(@as(?u64, null), state.revision(buffer.id));
+    try std.testing.expectEqual(@as(usize, 0), state.highlights(buffer.id).len);
+    try std.testing.expectEqual(@as(usize, 0), state.folds(buffer.id).len);
+    try std.testing.expectEqual(@as(usize, 0), state.symbols(buffer.id).len);
 }
