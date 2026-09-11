@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -32,22 +32,6 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: feature/v1.0-daily-driver
-
-      - name: Repair v1 Lua conformance version assertion
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          path = Path('src/lua_runtime.zig')
-          text = path.read_text()
-          old = "\\\\assert(zim.version == '0.7.0')"
-          new = "\\\\assert(zim.version == '1.0.0')"
-          if text.count(old) != 1:
-              raise SystemExit(f'expected exactly one stale Lua version assertion, found {text.count(old)}')
-          path.write_text(text.replace(old, new))
-          PY
 
       - name: Install Zig
         if: runner.os != 'Windows'
@@ -61,22 +45,6 @@ jobs:
         with:
           version: 0.16.0
           use-cache: false
-
-      - name: Apply pinned Zig formatting
-        run: zig fmt src/lua_runtime.zig
-
-      - name: Commit Lua conformance repair
-        if: runner.os == 'Linux' && github.event_name == 'pull_request'
-        shell: bash
-        run: |
-          if git diff --quiet; then
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/lua_runtime.zig
-          git commit -m "test: update Lua conformance for v1"
-          git push origin HEAD:feature/v1.0-daily-driver
 
       - name: Check Zig formatting
         run: zig fmt --check src build.zig
