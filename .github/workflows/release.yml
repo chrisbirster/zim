@@ -8,10 +8,50 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
+  release-gate:
+    name: validate-release-source
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require tag to point at current main HEAD
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          git fetch origin main
+          main_sha="$(git rev-parse origin/main)"
+          if [ "$GITHUB_SHA" != "$main_sha" ]; then
+            echo "release tag $GITHUB_REF_NAME points at $GITHUB_SHA, but origin/main is $main_sha" >&2
+            exit 1
+          fi
+
+      - name: Require successful exact-main CI
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          successful_runs="$(
+            gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+              -f head_sha="$GITHUB_SHA" \
+              -f status=completed \
+              -f per_page=20 \
+              --jq '[.workflow_runs[] | select(.event == "push" and .conclusion == "success")] | length'
+          )"
+          if [ "$successful_runs" -lt 1 ]; then
+            echo "no successful push CI run exists for exact release commit $GITHUB_SHA" >&2
+            exit 1
+          fi
+
   package:
     name: package-${{ matrix.os }}
+    needs: release-gate
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -48,11 +88,21 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            ./zig-out/bin/zim.exe --version
-            ./zig-out/bin/zim.exe --check
+            binary="./zig-out/bin/zim.exe"
           else
-            ./zig-out/bin/zim --version
-            ./zig-out/bin/zim --check
+            binary="./zig-out/bin/zim"
+          fi
+
+          "$binary" --version
+          "$binary" --check
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            expected="zim ${GITHUB_REF_NAME#v}"
+            actual="$("$binary" --version | head -n 1)"
+            if [ "$actual" != "$expected" ]; then
+              echo "release tag/version mismatch: expected '$expected', got '$actual'" >&2
+              exit 1
+            fi
           fi
 
       - name: Package archive
