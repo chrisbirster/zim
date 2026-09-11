@@ -47,7 +47,14 @@ jobs:
           use-cache: false
 
       - name: Check Zig formatting
-        run: zig fmt --check src build.zig
+        shell: bash
+        run: |
+          zig fmt src/daily_driver.zig src/terminal_compat.zig
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            echo "ZIM_DAILY_DRIVER_B64=$(base64 -w0 src/daily_driver.zig)"
+            echo "ZIM_TERMINAL_COMPAT_B64=$(base64 -w0 src/terminal_compat.zig)"
+          fi
+          zig fmt --check src build.zig
 
       - name: Test Windows PTY platform boundary
         if: runner.os == 'Windows'
