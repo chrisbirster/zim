@@ -133,13 +133,14 @@ pub fn build(b: *std.Build) void {
         return;
     }
 
-    // Bellard QuickJS 2026-06-04 currently corrupts an internal dynamic buffer
-    // when Hondo is compiled with an optimized mode on macOS/arm64. Keep the
-    // Zim executable ReleaseSafe while compiling the Hondo/QuickJS dependency in
-    // Debug on macOS until the upstream engine path is fixed. CI exercises the
-    // real ReleaseSafe executable through an interactive PTY smoke test.
-    const hondo_optimize: std.builtin.OptimizeMode = if (target.result.os.tag == .macos and optimize != .Debug)
-        .Debug
+    // Bellard QuickJS 2026-06-04 trips ReleaseSafe UB instrumentation during
+    // bytecode label resolution on macOS/arm64. Keep the Zim executable
+    // ReleaseSafe while compiling Hondo/QuickJS as ReleaseFast on macOS. This
+    // avoids the engine-side trap without pulling Debug UBSan runtime symbols
+    // into the release executable. CI exercises the resulting ReleaseSafe Zim
+    // binary through a real interactive PTY startup smoke test.
+    const hondo_optimize: std.builtin.OptimizeMode = if (target.result.os.tag == .macos and optimize == .ReleaseSafe)
+        .ReleaseFast
     else
         optimize;
     const hondo_dep = b.lazyDependency("hondo", .{
