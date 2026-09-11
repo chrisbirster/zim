@@ -227,11 +227,7 @@ fn handleProjectTreeKey(
     return switch (key) {
         .enter => blk: {
             const entry = &state.tree_entries.items[state.tree_selected];
-            if (entry.is_dir) {
-                state.editor.setStatus("directory is already expanded: {s}", .{entry.path});
-                try publishState(state, context);
-                break :blk .handled;
-            }
+            if (entry.is_dir) break :blk .handled;
             const root = state.editor.pinProjectRoot();
             const target = if (std.mem.eql(u8, root, "."))
                 try state.editor.allocator.dupe(u8, entry.path)
@@ -274,10 +270,7 @@ fn reloadProjectTree(state: *State) !void {
     state.tree_scroll = 0;
 
     const root = state.editor.pinProjectRoot();
-    var dir = std.Io.Dir.cwd().openDir(state.editor.io, root, .{ .iterate = true }) catch |err| {
-        state.editor.setStatus("project tree failed: {s}", .{@errorName(err)});
-        return;
-    };
+    var dir = std.Io.Dir.cwd().openDir(state.editor.io, root, .{ .iterate = true }) catch return;
     defer dir.close(state.editor.io);
 
     var walker = try dir.walk(state.editor.allocator);
@@ -301,7 +294,9 @@ fn clearProjectTree(state: *State, allocator: std.mem.Allocator) void {
 
 fn pathDepth(path: []const u8) usize {
     var depth: usize = 0;
-    for (path) |byte| if (byte == '/' or byte == '\\') depth += 1;
+    for (path) |byte| {
+        if (byte == '/' or byte == '\\') depth += 1;
+    }
     return depth;
 }
 
