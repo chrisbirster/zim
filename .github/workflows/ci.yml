@@ -106,10 +106,13 @@ jobs:
       - name: Build Zim
         run: zig build
 
-      - name: Install Python for RPC smoke and benchmarks
+      - name: Install Python for RPC smoke, benchmarks, and packaging
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Release packaging dry run
+        run: python scripts/package_release.py
 
       - name: Daily Driver performance gate
         shell: bash
