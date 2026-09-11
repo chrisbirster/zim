@@ -10,19 +10,22 @@ permissions:
 
 jobs:
   format:
-    if: ${{ github.event.head_commit.message != 'style: zig fmt v1' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        if: github.event.head_commit.message != 'style: zig fmt v1'
         with:
           ref: feature/v1.0-daily-driver
       - uses: mlugg/setup-zig@v2
+        if: github.event.head_commit.message != 'style: zig fmt v1'
         with:
           version: 0.16.0
           use-cache: false
       - name: Format Zig sources
+        if: github.event.head_commit.message != 'style: zig fmt v1'
         run: zig fmt src build.zig
       - name: Commit formatter output
+        if: github.event.head_commit.message != 'style: zig fmt v1'
         shell: bash
         run: |
           if git diff --quiet; then
