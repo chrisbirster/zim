@@ -19,17 +19,39 @@ esac
 
 ASSET="zim-${OS}-${ARCH}.tar.gz"
 if [ "$VERSION" = "latest" ]; then
-  URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
+  BASE_URL="https://github.com/${REPO}/releases/latest/download"
 else
   case "$VERSION" in v*) TAG="$VERSION" ;; *) TAG="v$VERSION" ;; esac
-  URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
+  BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
 fi
+URL="${BASE_URL}/${ASSET}"
+CHECKSUM_URL="${BASE_URL}/SHA256SUMS.txt"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
 echo "Installing Zim from $URL"
 curl -fL --retry 3 "$URL" -o "$TMP/$ASSET"
+curl -fL --retry 3 "$CHECKSUM_URL" -o "$TMP/SHA256SUMS.txt"
+
+EXPECTED="$(awk -v asset="$ASSET" '$2 == asset { print $1 }' "$TMP/SHA256SUMS.txt")"
+if [ -z "$EXPECTED" ]; then
+  echo "zim: checksum for $ASSET not found in release" >&2
+  exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL="$(sha256sum "$TMP/$ASSET" | awk '{ print $1 }')"
+elif command -v shasum >/dev/null 2>&1; then
+  ACTUAL="$(shasum -a 256 "$TMP/$ASSET" | awk '{ print $1 }')"
+else
+  echo "zim: sha256sum or shasum is required to verify the release" >&2
+  exit 1
+fi
+if [ "$EXPECTED" != "$ACTUAL" ]; then
+  echo "zim: SHA-256 verification failed for $ASSET" >&2
+  exit 1
+fi
+
 tar -xzf "$TMP/$ASSET" -C "$TMP"
 mkdir -p "$INSTALL_DIR"
 cp "$TMP/zim-${OS}-${ARCH}/zim" "$INSTALL_DIR/zim"
