@@ -3,8 +3,12 @@ const std = @import("std");
 const windows = std.os.windows;
 const kernel32 = windows.kernel32;
 
+const std_input_handle: windows.DWORD = 0xfffffff6;
+const std_output_handle: windows.DWORD = 0xfffffff5;
+
 extern "kernel32" fn GetStdHandle(nStdHandle: windows.DWORD) callconv(.winapi) ?windows.HANDLE;
 extern "kernel32" fn FlushFileBuffers(hFile: windows.HANDLE) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn DisconnectNamedPipe(hNamedPipe: windows.HANDLE) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn Sleep(dwMilliseconds: windows.DWORD) callconv(.winapi) void;
 
 pub const local_kind = "windows-named-pipe";
@@ -14,8 +18,8 @@ pub const StdioStream = struct {
     output: windows.HANDLE,
 
     pub fn init() !StdioStream {
-        const input = GetStdHandle(windows.STD_INPUT_HANDLE) orelse return error.RpcStdinUnavailable;
-        const output = GetStdHandle(windows.STD_OUTPUT_HANDLE) orelse return error.RpcStdoutUnavailable;
+        const input = GetStdHandle(std_input_handle) orelse return error.RpcStdinUnavailable;
+        const output = GetStdHandle(std_output_handle) orelse return error.RpcStdoutUnavailable;
         if (input == windows.INVALID_HANDLE_VALUE) return error.RpcStdinUnavailable;
         if (output == windows.INVALID_HANDLE_VALUE) return error.RpcStdoutUnavailable;
         return .{ .input = input, .output = output };
@@ -124,7 +128,7 @@ pub const LocalEndpoint = struct {
     pub fn disconnect(self: *LocalEndpoint) void {
         if (!self.connected_flag) return;
         _ = FlushFileBuffers(self.handle);
-        _ = kernel32.DisconnectNamedPipe(self.handle);
+        _ = DisconnectNamedPipe(self.handle);
         self.connected_flag = false;
     }
 };
