@@ -2,6 +2,8 @@ const std = @import("std");
 
 const windows = std.os.windows;
 
+extern "kernel32" fn GetStdHandle(nStdHandle: windows.DWORD) callconv(.winapi) ?windows.HANDLE;
+
 pub const IoError = error{ ReadFailed, WriteFailed };
 
 fn standardHandle(fd: c_int) IoError!windows.HANDLE {
@@ -11,7 +13,9 @@ fn standardHandle(fd: c_int) IoError!windows.HANDLE {
         2 => windows.STD_ERROR_HANDLE,
         else => return IoError.ReadFailed,
     };
-    return windows.GetStdHandle(id) catch return IoError.ReadFailed;
+    const handle = GetStdHandle(id) orelse return IoError.ReadFailed;
+    if (handle == windows.INVALID_HANDLE_VALUE) return IoError.ReadFailed;
+    return handle;
 }
 
 pub fn readByte(fd: c_int) IoError!?u8 {
