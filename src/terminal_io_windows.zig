@@ -7,6 +7,20 @@ const std_output_handle: windows.DWORD = 0xfffffff5;
 const std_error_handle: windows.DWORD = 0xfffffff4;
 
 extern "kernel32" fn GetStdHandle(nStdHandle: windows.DWORD) callconv(.winapi) ?windows.HANDLE;
+extern "kernel32" fn ReadFile(
+    hFile: windows.HANDLE,
+    lpBuffer: [*]u8,
+    nNumberOfBytesToRead: windows.DWORD,
+    lpNumberOfBytesRead: ?*windows.DWORD,
+    lpOverlapped: ?*windows.OVERLAPPED,
+) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn WriteFile(
+    hFile: windows.HANDLE,
+    lpBuffer: [*]const u8,
+    nNumberOfBytesToWrite: windows.DWORD,
+    lpNumberOfBytesWritten: ?*windows.DWORD,
+    lpOverlapped: ?*windows.OVERLAPPED,
+) callconv(.winapi) windows.BOOL;
 
 pub const IoError = error{ ReadFailed, WriteFailed };
 
@@ -25,8 +39,9 @@ fn standardHandle(fd: c_int) IoError!windows.HANDLE {
 pub fn readByte(fd: c_int) IoError!?u8 {
     const handle = try standardHandle(fd);
     var byte: [1]u8 = undefined;
-    const count = windows.ReadFile(handle, &byte, null) catch return IoError.ReadFailed;
-    if (count == 0) return null;
+    var read_count: windows.DWORD = 0;
+    if (ReadFile(handle, &byte, 1, &read_count, null) == 0) return IoError.ReadFailed;
+    if (read_count == 0) return null;
     return byte[0];
 }
 
@@ -34,8 +49,9 @@ pub fn writeAll(fd: c_int, bytes: []const u8) IoError!void {
     const handle = standardHandle(fd) catch return IoError.WriteFailed;
     var offset: usize = 0;
     while (offset < bytes.len) {
-        const written = windows.WriteFile(handle, bytes[offset..], null) catch return IoError.WriteFailed;
-        if (written == 0) return IoError.WriteFailed;
-        offset += written;
+        var written: windows.DWORD = 0;
+        const chunk: windows.DWORD = @intCast(@min(bytes.len - offset, std.math.maxInt(windows.DWORD)));
+        if (WriteFile(handle, bytes.ptr + offset, chunk, &written, null) == 0 or written == 0) return IoError.WriteFailed;
+        offset += @intCast(written);
     }
 }
