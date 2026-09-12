@@ -2,15 +2,19 @@ const std = @import("std");
 
 const windows = std.os.windows;
 
+const std_input_handle: windows.DWORD = 0xfffffff6;
+const std_output_handle: windows.DWORD = 0xfffffff5;
+const std_error_handle: windows.DWORD = 0xfffffff4;
+
 extern "kernel32" fn GetStdHandle(nStdHandle: windows.DWORD) callconv(.winapi) ?windows.HANDLE;
 
 pub const IoError = error{ ReadFailed, WriteFailed };
 
 fn standardHandle(fd: c_int) IoError!windows.HANDLE {
     const id: windows.DWORD = switch (fd) {
-        0 => windows.STD_INPUT_HANDLE,
-        1 => windows.STD_OUTPUT_HANDLE,
-        2 => windows.STD_ERROR_HANDLE,
+        0 => std_input_handle,
+        1 => std_output_handle,
+        2 => std_error_handle,
         else => return IoError.ReadFailed,
     };
     const handle = GetStdHandle(id) orelse return IoError.ReadFailed;
