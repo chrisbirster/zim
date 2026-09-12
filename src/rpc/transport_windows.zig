@@ -1,12 +1,51 @@
 const std = @import("std");
 
 const windows = std.os.windows;
-const kernel32 = windows.kernel32;
 
 const std_input_handle: windows.DWORD = 0xfffffff6;
 const std_output_handle: windows.DWORD = 0xfffffff5;
 
+const pipe_access_duplex: windows.DWORD = 0x00000003;
+const pipe_type_byte: windows.DWORD = 0x00000000;
+const pipe_readmode_byte: windows.DWORD = 0x00000000;
+const pipe_nowait: windows.DWORD = 0x00000001;
+
+const error_broken_pipe: windows.DWORD = 109;
+const error_no_data: windows.DWORD = 232;
+const error_pipe_connected: windows.DWORD = 535;
+const error_pipe_listening: windows.DWORD = 536;
+
 extern "kernel32" fn GetStdHandle(nStdHandle: windows.DWORD) callconv(.winapi) ?windows.HANDLE;
+extern "kernel32" fn GetLastError() callconv(.winapi) windows.DWORD;
+extern "kernel32" fn CloseHandle(hObject: windows.HANDLE) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn ReadFile(
+    hFile: windows.HANDLE,
+    lpBuffer: [*]u8,
+    nNumberOfBytesToRead: windows.DWORD,
+    lpNumberOfBytesRead: ?*windows.DWORD,
+    lpOverlapped: ?*windows.OVERLAPPED,
+) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn WriteFile(
+    hFile: windows.HANDLE,
+    lpBuffer: [*]const u8,
+    nNumberOfBytesToWrite: windows.DWORD,
+    lpNumberOfBytesWritten: ?*windows.DWORD,
+    lpOverlapped: ?*windows.OVERLAPPED,
+) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn CreateNamedPipeW(
+    lpName: windows.LPCWSTR,
+    dwOpenMode: windows.DWORD,
+    dwPipeMode: windows.DWORD,
+    nMaxInstances: windows.DWORD,
+    nOutBufferSize: windows.DWORD,
+    nInBufferSize: windows.DWORD,
+    nDefaultTimeOut: windows.DWORD,
+    lpSecurityAttributes: ?*const windows.SECURITY_ATTRIBUTES,
+) callconv(.winapi) windows.HANDLE;
+extern "kernel32" fn ConnectNamedPipe(
+    hNamedPipe: windows.HANDLE,
+    lpOverlapped: ?*windows.OVERLAPPED,
+) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn FlushFileBuffers(hFile: windows.HANDLE) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn DisconnectNamedPipe(hNamedPipe: windows.HANDLE) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn Sleep(dwMilliseconds: windows.DWORD) callconv(.winapi) void;
@@ -29,8 +68,8 @@ pub const StdioStream = struct {
         if (buffer.len == 0) return 0;
         var read_count: windows.DWORD = 0;
         const size: windows.DWORD = @intCast(@min(buffer.len, std.math.maxInt(windows.DWORD)));
-        if (kernel32.ReadFile(self.input, buffer.ptr, size, &read_count, null) == 0) {
-            if (windows.GetLastError() == .BROKEN_PIPE) return 0;
+        if (ReadFile(self.input, buffer.ptr, size, &read_count, null) == 0) {
+            if (GetLastError() == error_broken_pipe) return 0;
             return error.RpcReadFailed;
         }
         return @intCast(read_count);
@@ -41,7 +80,7 @@ pub const StdioStream = struct {
         while (offset < bytes.len) {
             var written: windows.DWORD = 0;
             const size: windows.DWORD = @intCast(@min(bytes.len - offset, std.math.maxInt(windows.DWORD)));
-            if (kernel32.WriteFile(self.output, bytes.ptr + offset, size, &written, null) == 0 or written == 0) return error.RpcWriteFailed;
+            if (WriteFile(self.output, bytes.ptr + offset, size, &written, null) == 0 or written == 0) return error.RpcWriteFailed;
             offset += @intCast(written);
         }
     }
@@ -58,10 +97,10 @@ pub const LocalEndpoint = struct {
         const wide = try std.unicode.utf8ToUtf16LeAllocZ(allocator, full_name);
         defer allocator.free(wide);
 
-        const handle = kernel32.CreateNamedPipeW(
+        const handle = CreateNamedPipeW(
             wide.ptr,
-            windows.PIPE_ACCESS_DUPLEX,
-            windows.PIPE_TYPE_BYTE | windows.PIPE_READMODE_BYTE | windows.PIPE_NOWAIT,
+            pipe_access_duplex,
+            pipe_type_byte | pipe_readmode_byte | pipe_nowait,
             1,
             64 * 1024,
             64 * 1024,
@@ -74,7 +113,7 @@ pub const LocalEndpoint = struct {
 
     pub fn deinit(self: *LocalEndpoint) void {
         self.disconnect();
-        windows.CloseHandle(self.handle);
+        _ = CloseHandle(self.handle);
         self.* = undefined;
     }
 
@@ -84,16 +123,16 @@ pub const LocalEndpoint = struct {
 
     pub fn pollAccept(self: *LocalEndpoint) !bool {
         if (self.connected_flag) return false;
-        if (kernel32.ConnectNamedPipe(self.handle, null) != 0) {
+        if (ConnectNamedPipe(self.handle, null) != 0) {
             self.connected_flag = true;
             return true;
         }
-        const code = windows.GetLastError();
-        if (code == .PIPE_CONNECTED) {
+        const code = GetLastError();
+        if (code == error_pipe_connected) {
             self.connected_flag = true;
             return true;
         }
-        if (code == .PIPE_LISTENING or code == .NO_DATA) return false;
+        if (code == error_pipe_listening or code == error_no_data) return false;
         return error.RpcPipeConnectFailed;
     }
 
@@ -101,10 +140,10 @@ pub const LocalEndpoint = struct {
         if (!self.connected_flag or buffer.len == 0) return .{};
         var read_count: windows.DWORD = 0;
         const size: windows.DWORD = @intCast(@min(buffer.len, std.math.maxInt(windows.DWORD)));
-        if (kernel32.ReadFile(self.handle, buffer.ptr, size, &read_count, null) != 0) return .{ .count = @intCast(read_count) };
-        const code = windows.GetLastError();
-        if (code == .NO_DATA or code == .PIPE_LISTENING) return .{};
-        if (code == .BROKEN_PIPE) {
+        if (ReadFile(self.handle, buffer.ptr, size, &read_count, null) != 0) return .{ .count = @intCast(read_count) };
+        const code = GetLastError();
+        if (code == error_no_data or code == error_pipe_listening) return .{};
+        if (code == error_broken_pipe) {
             self.disconnect();
             return .{ .disconnected = true };
         }
@@ -115,10 +154,10 @@ pub const LocalEndpoint = struct {
         if (!self.connected_flag or bytes.len == 0) return 0;
         var written: windows.DWORD = 0;
         const size: windows.DWORD = @intCast(@min(bytes.len, std.math.maxInt(windows.DWORD)));
-        if (kernel32.WriteFile(self.handle, bytes.ptr, size, &written, null) != 0) return @intCast(written);
-        const code = windows.GetLastError();
-        if (code == .NO_DATA or code == .PIPE_LISTENING) return 0;
-        if (code == .BROKEN_PIPE) {
+        if (WriteFile(self.handle, bytes.ptr, size, &written, null) != 0) return @intCast(written);
+        const code = GetLastError();
+        if (code == error_no_data or code == error_pipe_listening) return 0;
+        if (code == error_broken_pipe) {
             self.disconnect();
             return 0;
         }
