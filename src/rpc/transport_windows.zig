@@ -1,30 +1,26 @@
 const std = @import("std");
 
-const c = @cImport({
-    @cDefine("_WIN32_WINNT", "0x0A00");
-    @cInclude("windows.h");
-});
+const windows = std.os.windows;
+const kernel32 = windows.kernel32;
 
 pub const local_kind = "windows-named-pipe";
 
 pub const StdioStream = struct {
-    input: c.HANDLE,
-    output: c.HANDLE,
+    input: windows.HANDLE,
+    output: windows.HANDLE,
 
     pub fn init() !StdioStream {
-        const input = c.GetStdHandle(c.STD_INPUT_HANDLE);
-        const output = c.GetStdHandle(c.STD_OUTPUT_HANDLE);
-        if (input == null or input == c.INVALID_HANDLE_VALUE) return error.RpcStdinUnavailable;
-        if (output == null or output == c.INVALID_HANDLE_VALUE) return error.RpcStdoutUnavailable;
+        const input = windows.GetStdHandle(windows.STD_INPUT_HANDLE) catch return error.RpcStdinUnavailable;
+        const output = windows.GetStdHandle(windows.STD_OUTPUT_HANDLE) catch return error.RpcStdoutUnavailable;
         return .{ .input = input, .output = output };
     }
 
     pub fn read(self: *StdioStream, buffer: []u8) !usize {
         if (buffer.len == 0) return 0;
-        var read_count: c.DWORD = 0;
-        const size: c.DWORD = @intCast(@min(buffer.len, std.math.maxInt(c.DWORD)));
-        if (c.ReadFile(self.input, buffer.ptr, size, &read_count, null) == 0) {
-            if (c.GetLastError() == c.ERROR_BROKEN_PIPE) return 0;
+        var read_count: windows.DWORD = 0;
+        const size: windows.DWORD = @intCast(@min(buffer.len, std.math.maxInt(windows.DWORD)));
+        if (kernel32.ReadFile(self.input, buffer.ptr, size, &read_count, null) == 0) {
+            if (windows.GetLastError() == .BROKEN_PIPE) return 0;
             return error.RpcReadFailed;
         }
         return @intCast(read_count);
@@ -33,9 +29,9 @@ pub const StdioStream = struct {
     pub fn writeAll(self: *StdioStream, bytes: []const u8) !void {
         var offset: usize = 0;
         while (offset < bytes.len) {
-            var written: c.DWORD = 0;
-            const size: c.DWORD = @intCast(@min(bytes.len - offset, std.math.maxInt(c.DWORD)));
-            if (c.WriteFile(self.output, bytes.ptr + offset, size, &written, null) == 0 or written == 0) return error.RpcWriteFailed;
+            var written: windows.DWORD = 0;
+            const size: windows.DWORD = @intCast(@min(bytes.len - offset, std.math.maxInt(windows.DWORD)));
+            if (kernel32.WriteFile(self.output, bytes.ptr + offset, size, &written, null) == 0 or written == 0) return error.RpcWriteFailed;
             offset += @intCast(written);
         }
     }
@@ -43,7 +39,7 @@ pub const StdioStream = struct {
 
 pub const LocalEndpoint = struct {
     allocator: std.mem.Allocator,
-    handle: c.HANDLE,
+    handle: windows.HANDLE,
     connected_flag: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, endpoint: []const u8) !LocalEndpoint {
@@ -52,23 +48,23 @@ pub const LocalEndpoint = struct {
         const wide = try std.unicode.utf8ToUtf16LeAllocZ(allocator, full_name);
         defer allocator.free(wide);
 
-        const handle = c.CreateNamedPipeW(
+        const handle = kernel32.CreateNamedPipeW(
             wide.ptr,
-            c.PIPE_ACCESS_DUPLEX,
-            c.PIPE_TYPE_BYTE | c.PIPE_READMODE_BYTE | c.PIPE_NOWAIT,
+            windows.PIPE_ACCESS_DUPLEX,
+            windows.PIPE_TYPE_BYTE | windows.PIPE_READMODE_BYTE | windows.PIPE_NOWAIT,
             1,
             64 * 1024,
             64 * 1024,
             0,
             null,
         );
-        if (handle == c.INVALID_HANDLE_VALUE) return error.RpcPipeCreateFailed;
+        if (handle == windows.INVALID_HANDLE_VALUE) return error.RpcPipeCreateFailed;
         return .{ .allocator = allocator, .handle = handle };
     }
 
     pub fn deinit(self: *LocalEndpoint) void {
         self.disconnect();
-        _ = c.CloseHandle(self.handle);
+        windows.CloseHandle(self.handle);
         self.* = undefined;
     }
 
@@ -78,27 +74,27 @@ pub const LocalEndpoint = struct {
 
     pub fn pollAccept(self: *LocalEndpoint) !bool {
         if (self.connected_flag) return false;
-        if (c.ConnectNamedPipe(self.handle, null) != 0) {
+        if (kernel32.ConnectNamedPipe(self.handle, null) != 0) {
             self.connected_flag = true;
             return true;
         }
-        const code = c.GetLastError();
-        if (code == c.ERROR_PIPE_CONNECTED) {
+        const code = windows.GetLastError();
+        if (code == .PIPE_CONNECTED) {
             self.connected_flag = true;
             return true;
         }
-        if (code == c.ERROR_PIPE_LISTENING or code == c.ERROR_NO_DATA) return false;
+        if (code == .PIPE_LISTENING or code == .NO_DATA) return false;
         return error.RpcPipeConnectFailed;
     }
 
     pub fn readAvailable(self: *LocalEndpoint, buffer: []u8) !ReadResult {
         if (!self.connected_flag or buffer.len == 0) return .{};
-        var read_count: c.DWORD = 0;
-        const size: c.DWORD = @intCast(@min(buffer.len, std.math.maxInt(c.DWORD)));
-        if (c.ReadFile(self.handle, buffer.ptr, size, &read_count, null) != 0) return .{ .count = @intCast(read_count) };
-        const code = c.GetLastError();
-        if (code == c.ERROR_NO_DATA or code == c.ERROR_PIPE_LISTENING) return .{};
-        if (code == c.ERROR_BROKEN_PIPE) {
+        var read_count: windows.DWORD = 0;
+        const size: windows.DWORD = @intCast(@min(buffer.len, std.math.maxInt(windows.DWORD)));
+        if (kernel32.ReadFile(self.handle, buffer.ptr, size, &read_count, null) != 0) return .{ .count = @intCast(read_count) };
+        const code = windows.GetLastError();
+        if (code == .NO_DATA or code == .PIPE_LISTENING) return .{};
+        if (code == .BROKEN_PIPE) {
             self.disconnect();
             return .{ .disconnected = true };
         }
@@ -107,12 +103,12 @@ pub const LocalEndpoint = struct {
 
     pub fn writeAvailable(self: *LocalEndpoint, bytes: []const u8) !usize {
         if (!self.connected_flag or bytes.len == 0) return 0;
-        var written: c.DWORD = 0;
-        const size: c.DWORD = @intCast(@min(bytes.len, std.math.maxInt(c.DWORD)));
-        if (c.WriteFile(self.handle, bytes.ptr, size, &written, null) != 0) return @intCast(written);
-        const code = c.GetLastError();
-        if (code == c.ERROR_NO_DATA or code == c.ERROR_PIPE_LISTENING) return 0;
-        if (code == c.ERROR_BROKEN_PIPE) {
+        var written: windows.DWORD = 0;
+        const size: windows.DWORD = @intCast(@min(bytes.len, std.math.maxInt(windows.DWORD)));
+        if (kernel32.WriteFile(self.handle, bytes.ptr, size, &written, null) != 0) return @intCast(written);
+        const code = windows.GetLastError();
+        if (code == .NO_DATA or code == .PIPE_LISTENING) return 0;
+        if (code == .BROKEN_PIPE) {
             self.disconnect();
             return 0;
         }
@@ -121,8 +117,8 @@ pub const LocalEndpoint = struct {
 
     pub fn disconnect(self: *LocalEndpoint) void {
         if (!self.connected_flag) return;
-        _ = c.FlushFileBuffers(self.handle);
-        _ = c.DisconnectNamedPipe(self.handle);
+        _ = kernel32.FlushFileBuffers(self.handle);
+        _ = kernel32.DisconnectNamedPipe(self.handle);
         self.connected_flag = false;
     }
 };
@@ -133,7 +129,7 @@ pub const ReadResult = struct {
 };
 
 pub fn sleepOneMs() void {
-    c.Sleep(1);
+    kernel32.Sleep(1);
 }
 
 pub fn pipeNameAlloc(allocator: std.mem.Allocator, endpoint: []const u8) ![]u8 {

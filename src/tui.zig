@@ -207,7 +207,7 @@ const TuiApp = struct {
                     }
                     return null;
                 }
-                if (cp == default_leader.leader or was_pending) return null;
+                if (was_pending or (cp == default_leader.leader and self.leader.pending)) return null;
             },
             else => if (self.editor.mode != .normal or self.editor.commandOpen()) self.leader.reset(),
         }

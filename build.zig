@@ -61,6 +61,7 @@ pub fn build(b: *std.Build) void {
         .lang = .lua54,
     });
     const zlua = zlua_dep.module("zlua");
+    zlua.optimize = zlua_optimize;
 
     const tree_sitter_dep = b.dependency("tree_sitter", .{
         .target = target,
