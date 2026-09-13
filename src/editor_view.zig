@@ -46,6 +46,8 @@ const State = struct {
     tree_scroll: usize = 0,
 };
 
+var bound_project_tree: ?*State = null;
+
 const CoarseState = struct {
     mode: editor_module.Mode,
     command_open: bool,
@@ -99,12 +101,16 @@ fn create(
             state.refresh_nonce = value.value.refreshNonce;
         }
     }
-    if (state.role == .project_tree) try reloadProjectTree(state);
+    if (state.role == .project_tree) {
+        bound_project_tree = state;
+        try reloadProjectTree(state);
+    }
     return state;
 }
 
 fn destroy(allocator: std.mem.Allocator, state_ptr: ?*anyopaque) void {
     const state: *State = @ptrCast(@alignCast(state_ptr orelse return));
+    if (bound_project_tree == state) bound_project_tree = null;
     clearProjectTree(state, allocator);
     state.tree_entries.deinit(allocator);
     clearExpandedPaths(state, allocator);
@@ -194,6 +200,108 @@ fn handleKey(
     const after = captureCoarseState(state.editor);
     if (shouldPublishKeyState(before, after)) try publishState(state, context);
     return .handled;
+}
+
+pub fn dispatchProjectTreeKey(key: hondo.terminal.input.Key) !bool {
+    const state = bound_project_tree orelse return false;
+    if (state.tree_entries.items.len == 0) {
+        return switch (key) {
+            .codepoint => |cp| if (cp == 'r') blk: {
+                try reloadProjectTree(state);
+                break :blk true;
+            } else false,
+            else => false,
+        };
+    }
+
+    const moved = switch (key) {
+        .down => moveTreeSelection(state, 1),
+        .up => moveTreeSelection(state, -1),
+        .codepoint => |cp| if (cp == 'j') moveTreeSelection(state, 1) else if (cp == 'k') moveTreeSelection(state, -1) else false,
+        else => false,
+    };
+    if (moved) return true;
+
+    return switch (key) {
+        .enter => blk: {
+            try activateTreeEntryDirect(state);
+            break :blk true;
+        },
+        .right => blk: {
+            try expandTreeEntryDirect(state);
+            break :blk true;
+        },
+        .left => blk: {
+            try collapseTreeEntryOrParentDirect(state);
+            break :blk true;
+        },
+        .codepoint => |cp| switch (cp) {
+            'l' => blk: {
+                try expandTreeEntryDirect(state);
+                break :blk true;
+            },
+            'h' => blk: {
+                try collapseTreeEntryOrParentDirect(state);
+                break :blk true;
+            },
+            'r' => blk: {
+                try reloadProjectTree(state);
+                break :blk true;
+            },
+            else => false,
+        },
+        else => false,
+    };
+}
+
+fn activateTreeEntryDirect(state: *State) !void {
+    const entry = &state.tree_entries.items[state.tree_selected];
+    if (entry.is_dir) {
+        if (isTreeExpanded(state, entry.path)) {
+            removeTreeExpanded(state, entry.path);
+        } else {
+            try addTreeExpanded(state, entry.path);
+        }
+        try reloadProjectTree(state);
+        return;
+    }
+
+    const root = state.editor.pinProjectRoot();
+    const target = if (std.mem.eql(u8, root, "."))
+        try state.editor.allocator.dupe(u8, entry.path)
+    else
+        try std.fs.path.join(state.editor.allocator, &.{ root, entry.path });
+    defer state.editor.allocator.free(target);
+    _ = try state.editor.editPath(target);
+}
+
+fn expandTreeEntryDirect(state: *State) !void {
+    const entry = state.tree_entries.items[state.tree_selected];
+    if (!entry.is_dir) return;
+    if (!isTreeExpanded(state, entry.path)) {
+        try addTreeExpanded(state, entry.path);
+        try reloadProjectTree(state);
+    } else if (state.tree_selected + 1 < state.tree_entries.items.len and
+        state.tree_entries.items[state.tree_selected + 1].depth > entry.depth)
+    {
+        state.tree_selected += 1;
+    }
+}
+
+fn collapseTreeEntryOrParentDirect(state: *State) !void {
+    const entry = state.tree_entries.items[state.tree_selected];
+    if (entry.is_dir and isTreeExpanded(state, entry.path)) {
+        removeTreeExpanded(state, entry.path);
+        try reloadProjectTree(state);
+        return;
+    }
+    const parent = parentTreePath(entry.path) orelse return;
+    for (state.tree_entries.items, 0..) |candidate, index| {
+        if (std.mem.eql(u8, candidate.path, parent)) {
+            state.tree_selected = index;
+            return;
+        }
+    }
 }
 
 fn handleProjectTreeKey(

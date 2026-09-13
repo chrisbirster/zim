@@ -99,7 +99,7 @@ pub const Service = struct {
     pub fn destroy(self: *Service) void {
         const allocator = self.allocator;
         const command_names = [_][]const u8{
-            "Help",          "help",            "Errors",          "Checkhealth", "SessionSave", "SessionRestore",
+            "Help",          "help",            "Errors",          "Checkhealth", "checkhealth", "SessionSave", "SessionRestore",
             "RecoveryWrite", "RecoveryRestore", "RecoveryDiscard", "Colorscheme", "Highlight",
         };
         for (command_names) |name| _ = self.api.commandDelete(name);
@@ -169,6 +169,7 @@ pub const Service = struct {
         _ = try self.api.commandCreate("help", "open built-in Zim help", helpCommand, self);
         _ = try self.api.commandCreate("Errors", "show recent recoverable errors", errorsCommand, self);
         _ = try self.api.commandCreate("Checkhealth", "show v1 runtime diagnostics", checkhealthCommand, self);
+        _ = try self.api.commandCreate("checkhealth", "show v1 runtime diagnostics", checkhealthCommand, self);
         _ = try self.api.commandCreate("SessionSave", "persist the current workspace session", sessionSaveCommand, self);
         _ = try self.api.commandCreate("SessionRestore", "restore the last workspace session", sessionRestoreCommand, self);
         _ = try self.api.commandCreate("RecoveryWrite", "write an atomic crash-recovery checkpoint", recoveryWriteCommand, self);

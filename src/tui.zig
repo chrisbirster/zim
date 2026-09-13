@@ -124,6 +124,37 @@ const TuiApp = struct {
             };
         }
 
+        if (self.tree_open and !self.editor.commandOpen() and !ex_entry) {
+            const tree_handled = switch (maybe_event.?) {
+                .key => |key| try editor_view.dispatchProjectTreeKey(key),
+                else => false,
+            };
+            if (tree_handled) {
+                if (before_buffer_id != self.editor.currentBufferConst().id) {
+                    self.tree_open = false;
+                    try self.runtime.eval(
+                        "globalThis.__zimCloseTree?.();",
+                        "zim-close-tree-after-direct-open.js",
+                    );
+                    try self.registry.sync(self.scene);
+                    try self.syncFocus();
+                }
+                try api_observer.emitChanges(self.api, self.editor, before);
+                return .{
+                    .result = .{ .default_prevented = true },
+                    .path = .native,
+                };
+            }
+
+            // While the explorer owns the keyboard, unknown keys must not fall
+            // through and mutate the editor buffer behind it.
+            try api_observer.emitChanges(self.api, self.editor, before);
+            return .{
+                .result = .{ .default_prevented = true },
+                .path = .native,
+            };
+        }
+
         const grid = self.renderer.grid();
         const result = try hondo.native_view_runtime.dispatchInteractive(
             self.allocator,
@@ -551,6 +582,8 @@ test "Hondo chrome reacts while editor grammar stays native" {
 
     try std.testing.expect(sceneContainsText(app.scene, "NORMAL"));
     try std.testing.expect(sceneContainsText(app.scene, "your new code overlord."));
+    try std.testing.expect(sceneContainsText(app.scene, "ZIM v1.0.0"));
+    try std.testing.expect(sceneContainsText(app.scene, ":checkhealth"));
 
     const insert_mode = try app.dispatch(.{ .key = .{ .codepoint = 'i' } });
     try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, insert_mode.path);
