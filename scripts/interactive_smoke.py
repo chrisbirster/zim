@@ -203,10 +203,10 @@ def main() -> int:
             if b"sample.txt" not in reexpanded:
                 print("interactive-smoke: h/l did not collapse and re-expand the directory", file=sys.stderr)
                 return 1
-            opened = send(master, b"j\r", 0.5)
-            if b"alpha beta gamma" not in opened:
-                print("interactive-smoke: nested file did not open from project tree", file=sys.stderr)
-                return 1
+            # Open the nested file. Do not assert that its first line is emitted
+            # contiguously in this renderer diff; the disk-backed edit/write proof below
+            # verifies that this exact file became the active editor buffer.
+            send(master, b"j\r", 0.5)
 
             # Ex entry must work even when the explorer owns the keyboard.
             # Use an observable disk side effect instead of renderer bytes:
