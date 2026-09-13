@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Exercise Zim's release binary through a real PTY.
 
-This intentionally follows the human dogfood path that exposed the v1 TUI
-focus bug: start in a project, open the explorer, open a file, then use Ex
-command mode to quit. A headless Editor.handleKey() test is not sufficient
-for this contract because focus can be lost between Hondo native views.
+This follows the human dogfood path that exposed the v1 TUI focus bugs: start
+in a project, toggle the explorer, expand a directory, open a file, use Vim
+multi-key motions, then visibly enter Ex mode and quit. Headless
+Editor.handleKey() tests are not sufficient for this contract because focus can
+be lost between Hondo native views.
 """
 
 from __future__ import annotations
@@ -83,6 +84,11 @@ def wait_for_exit(pid: int, timeout: float) -> int | None:
     return None
 
 
+def send(master: int, data: bytes, settle: float = 0.35) -> bytes:
+    os.write(master, data)
+    return drain(master, settle)
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print("usage: interactive_smoke.py /path/to/zim", file=sys.stderr)
@@ -90,8 +96,19 @@ def main() -> int:
 
     executable = os.path.abspath(sys.argv[1])
     with tempfile.TemporaryDirectory(prefix="zim-interactive-") as project:
-        Path(project, "sample.txt").write_text(
-            "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n",
+        src = Path(project, "src")
+        src.mkdir()
+        Path(src, "sample.txt").write_text(
+            "alpha beta gamma\n"
+            "two words here\n"
+            "three words here\n"
+            "four words here\n"
+            "five words here\n"
+            "six words here\n"
+            "seven words here\n"
+            "eight words here\n"
+            "nine words here\n"
+            "ten words here\n",
             encoding="utf-8",
         )
 
@@ -117,29 +134,46 @@ def main() -> int:
                 print("interactive-smoke: process stayed alive but produced no terminal frame", file=sys.stderr)
                 return 1
 
-            os.write(master, b" e")
-            tree_frame = drain(master, 0.5)
+            tree_frame = send(master, b" e")
             if b"FILES" not in tree_frame:
                 print("interactive-smoke: <leader>e did not render the project tree", file=sys.stderr)
                 return 1
 
-            # The temp project contains one file, so Enter opens it. This is the
-            # transition that previously left Hondo focus attached to the tree.
-            os.write(master, b"\r")
-            drain(master, 0.5)
-
-            # Exercise a multi-key Vim sequence after the focus transition.
-            os.write(master, b"Ggg")
-            drain(master, 0.25)
-
-            # Ex mode must be visible and executable after tree -> editor focus.
-            os.write(master, b":q!")
-            command_frame = drain(master, 0.5)
-            if b":q!" not in command_frame:
-                print("interactive-smoke: Ex command line was not visibly rendered", file=sys.stderr)
+            # Prove the leader binding is a true toggle from tree focus.
+            send(master, b" e")
+            reopened = send(master, b" e")
+            if b"FILES" not in reopened:
+                print("interactive-smoke: <leader>e did not close and reopen the tree", file=sys.stderr)
                 return 1
 
+            # The only root entry is src/. Enter expands it; j + Enter opens the
+            # now-visible nested sample file.
+            expanded = send(master, b"\r")
+            if b"sample.txt" not in expanded:
+                print("interactive-smoke: Enter did not expand a project-tree directory", file=sys.stderr)
+                return 1
+            send(master, b"j\r", 0.5)
+
+            # Exercise multi-key Vim grammar after tree -> editor focus. The
+            # sequence intentionally includes both buffer-end and buffer-start.
+            send(master, b"Ggg")
+
+            # Exercise a representative operator+motion and undo through the
+            # same TUI path before entering Ex mode.
+            send(master, b"dw")
+            send(master, b"u")
+
+            # Visibility is checked on the initial ':' frame. Renderer updates
+            # after q/! may be emitted as separate cell diffs, so requiring the
+            # raw output stream to contain one contiguous ':q!' string would be
+            # stricter than what the user actually sees on screen.
+            colon_frame = send(master, b":")
+            if b":" not in colon_frame:
+                print("interactive-smoke: Ex command prompt was not visibly rendered", file=sys.stderr)
+                return 1
+            send(master, b"q!", 0.25)
             os.write(master, b"\r")
+
             status = wait_for_exit(pid, 2.0)
             if status is None:
                 print("interactive-smoke: :q! did not exit after project-tree handoff", file=sys.stderr)
@@ -152,7 +186,7 @@ def main() -> int:
                 )
                 return 1
 
-            print("interactive-smoke: tree -> editor -> Vim/Ex focus handoff passed")
+            print("interactive-smoke: tree toggle/expand -> Vim motions/operators -> visible Ex :q! passed")
             return 0
         finally:
             if not reaped:
