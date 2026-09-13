@@ -1051,17 +1051,6 @@ pub const Editor = struct {
                 break :blk true;
             },
             .codepoint => |cp| blk: {
-                if (self.pending_g) {
-                    self.pending_g = false;
-                    if (cp == 'e' or cp == 'E') {
-                        const motion_count = self.operator_count * self.takeCount();
-                        const range = self.previousEndMotionRange(cp == 'E', motion_count);
-                        try self.applyOperator(op, range);
-                        break :blk true;
-                    }
-                    self.resetOperator();
-                    break :blk false;
-                }
                 if (cp >= '1' and cp <= '9') {
                     const slot: usize = @intCast(cp - '0');
                     if (slot <= self.pins.count() and try self.pinJumpSlot(slot, true)) self.closePinSwitcher();
@@ -1603,6 +1592,17 @@ pub const Editor = struct {
 
         return switch (key) {
             .codepoint => |cp| blk: {
+                if (self.pending_g) {
+                    self.pending_g = false;
+                    if (cp == 'e' or cp == 'E') {
+                        const motion_count = self.operator_count * self.takeCount();
+                        const range = self.previousEndMotionRange(cp == 'E', motion_count);
+                        try self.applyOperator(op, range);
+                        break :blk true;
+                    }
+                    self.resetOperator();
+                    break :blk false;
+                }
                 if (cp >= '1' and cp <= '9') {
                     self.count_prefix = self.count_prefix * 10 + @as(usize, @intCast(cp - '0'));
                     break :blk true;
@@ -1644,9 +1644,12 @@ pub const Editor = struct {
     fn handleVisual(self: *Editor, key: Key) !bool {
         if (self.pending_g) {
             self.pending_g = false;
-            if (key == .codepoint and key.codepoint == 'g') {
-                self.moveToLine(0);
-                return true;
+            switch (key) {
+                .codepoint => |cp| if (cp == 'g') {
+                    self.moveToLine(0);
+                    return true;
+                },
+                else => {},
             }
         }
         return switch (key) {
@@ -2102,10 +2105,10 @@ pub const Editor = struct {
     }
 
     fn deleteCharacterBackward(self: *Editor) !bool {
-        const cursor = self.cursor();
-        if (cursor == 0 or cursor == lineStartAt(self.text(), cursor)) return false;
-        const start = previousCodepointStartSafe(self.text(), cursor);
-        try self.deleteRange(.{ .start = start, .end = cursor });
+        const cursor_offset = self.cursor();
+        if (cursor_offset == 0 or cursor_offset == lineStartAt(self.text(), cursor_offset)) return false;
+        const start = previousCodepointStartSafe(self.text(), cursor_offset);
+        try self.deleteRange(.{ .start = start, .end = cursor_offset });
         return true;
     }
 
@@ -3105,7 +3108,7 @@ fn previousWORDend(bytes: []const u8, cursor: usize) usize {
 
 fn wordUnderCursor(bytes: []const u8, cursor: usize) ?Range {
     if (bytes.len == 0) return null;
-    var at = @min(cursor, bytes.len - 1);
+    const at = @min(cursor, bytes.len - 1);
     if (!isWordByte(bytes[at])) return null;
     var start = at;
     while (start > 0) {
