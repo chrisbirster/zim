@@ -98,7 +98,7 @@ jobs:
           node-version: 22
 
       - name: Install UI dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Test Solid/Hondo UI state
         run: npm run test:ui
