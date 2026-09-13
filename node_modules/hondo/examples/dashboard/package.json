@@ -1,0 +1,15 @@
+{
+  "name": "@hondo/example-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@hondo/core": "0.1.0",
+    "@hondo/solid": "0.1.0",
+    "solid-js": "2.0.0-rc.4"
+  }
+}

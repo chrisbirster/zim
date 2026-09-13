@@ -1,0 +1,6 @@
+node_modules/
+examples/*/dist/
+zig/src/generated/
+zig-out/
+.zig-cache/
+.DS_Store

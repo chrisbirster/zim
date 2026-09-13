@@ -17,6 +17,16 @@ import {
   type HondoRefHandle,
 } from '@hondo/solid';
 import { flush } from 'solid-js';
+import {
+  contextSummary as summarizeContext,
+  dashboardVisible as shouldShowDashboard,
+  nativePopupItemsPayload,
+  nextContextIndex,
+  payloadObject,
+  pinsPayload,
+  type NativePopupItem,
+  type PinView,
+} from './state';
 
 const host = new HondoHost(new NativeMutationBridge());
 const restoreHost = installHost(host);
@@ -38,9 +48,6 @@ const [references, setReferences] = createSignal(0);
 const [treeOpen, setTreeOpen] = createSignal(false);
 const [treeRefreshNonce, setTreeRefreshNonce] = createSignal(0);
 const [zenMode, setZenMode] = createSignal(true);
-
-type PinView = { id: number; path: string; line: number; column: number; label?: string };
-type NativePopupItem = { label: string; detail?: string };
 
 const [pins, setPins] = createSignal<PinView[]>([]);
 const [pinSwitcherOpen, setPinSwitcherOpen] = createSignal(false);
@@ -73,40 +80,6 @@ type ZimGlobals = typeof globalThis & {
 const globals = globalThis as ZimGlobals;
 globals.__zimJsKeyEvents = 0;
 
-function payloadObject(payload: HondoValue): Record<string, HondoValue> | undefined {
-  if (!payload || Array.isArray(payload) || typeof payload !== 'object') return undefined;
-  return payload as Record<string, HondoValue>;
-}
-
-function pinsPayload(value: HondoValue): PinView[] {
-  if (!Array.isArray(value)) return [];
-  const result: PinView[] = [];
-  for (const candidate of value) {
-    const item = payloadObject(candidate);
-    if (!item) continue;
-    if (typeof item.id !== 'number' || typeof item.path !== 'string' || typeof item.line !== 'number' || typeof item.column !== 'number') continue;
-    result.push({
-      id: item.id,
-      path: item.path,
-      line: item.line,
-      column: item.column,
-      label: typeof item.label === 'string' ? item.label : undefined,
-    });
-  }
-  return result;
-}
-
-function nativePopupItemsPayload(value: HondoValue): NativePopupItem[] {
-  if (!Array.isArray(value)) return [];
-  const result: NativePopupItem[] = [];
-  for (const candidate of value) {
-    const item = payloadObject(candidate);
-    if (!item || typeof item.label !== 'string') continue;
-    result.push({ label: item.label, detail: typeof item.detail === 'string' ? item.detail : undefined });
-  }
-  return result;
-}
-
 function keyPayload(event: HondoNodeEvent): { kind?: string; codepoint?: number } | undefined {
   const value = payloadObject(event.payload);
   if (!value) return undefined;
@@ -121,32 +94,19 @@ function projectLabel(): string {
 }
 
 function dashboardVisible(): boolean {
-  return path() === '[No Name]'
-    && !modified()
-    && mode() === 'NORMAL'
-    && !commandOpen()
-    && !treeOpen()
-    && !pinSwitcherOpen()
-    && !nativePopupOpen();
+  return shouldShowDashboard({
+    path: path(),
+    modified: modified(),
+    mode: mode(),
+    commandOpen: commandOpen(),
+    treeOpen: treeOpen(),
+    pinSwitcherOpen: pinSwitcherOpen(),
+    nativePopupOpen: nativePopupOpen(),
+  });
 }
 
 function contextSummary(): string {
-  switch (contextIndex()) {
-    case 0:
-      return symbols() === 0 ? 'No symbol result yet' : `${symbols()} symbol${symbols() === 1 ? '' : 's'}`;
-    case 1:
-      return diagnostics() === 0 ? 'No diagnostics' : `${diagnostics()} diagnostic${diagnostics() === 1 ? '' : 's'}`;
-    case 2:
-      return references() === 0 ? 'No reference result yet' : `${references()} reference${references() === 1 ? '' : 's'}`;
-    case 3:
-      return 'Git context surface';
-    case 4:
-      return 'Quickfix context surface';
-    case 5:
-      return 'Tests context surface';
-    default:
-      return '';
-  }
+  return summarizeContext(contextIndex(), symbols(), diagnostics(), references());
 }
 
 function onNativeState(event: HondoNodeEvent): void {
@@ -198,9 +158,8 @@ function contextKey(event: HondoNodeEvent): void {
     return;
   }
   if (key?.kind === 'left' || key?.kind === 'right') {
-    const direction = key.kind === 'right' ? 1 : -1;
-    const next = (contextIndex() + direction + contextNames.length) % contextNames.length;
-    setContextIndex(next);
+    const direction: 1 | -1 = key.kind === 'right' ? 1 : -1;
+    setContextIndex(nextContextIndex(contextIndex(), direction, contextNames.length));
     event.preventDefault();
     flush();
   }
