@@ -66,6 +66,8 @@ type ZimGlobals = typeof globalThis & {
   __zimToggleTree?: () => void;
   __zimToggleZen?: () => void;
   __zimFocusEditor?: () => void;
+  __zimFocusTree?: () => void;
+  __zimCloseTree?: () => void;
 };
 
 const globals = globalThis as ZimGlobals;
@@ -420,6 +422,20 @@ globals.__zimFocusEditor = () => {
   editorRef?.focus();
 };
 
+globals.__zimFocusTree = () => {
+  if (!treeOpen()) return;
+  setFocusZone('tree');
+  flush();
+  treeRef?.focus();
+};
+
+globals.__zimCloseTree = () => {
+  if (treeOpen()) setTreeOpen(false);
+  setFocusZone('editor');
+  flush();
+  editorRef?.focus();
+};
+
 globals.__zimToggleZen = () => {
   const next = !zenMode();
   setZenMode(next);
@@ -520,6 +536,8 @@ globals.__zimUiDispose = () => {
   globals.__zimToggleTree = undefined;
   globals.__zimToggleZen = undefined;
   globals.__zimFocusEditor = undefined;
+  globals.__zimFocusTree = undefined;
+  globals.__zimCloseTree = undefined;
   disposeRender();
   restoreHost();
 };

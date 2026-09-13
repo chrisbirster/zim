@@ -32,6 +32,7 @@ const TuiApp = struct {
     registry: hondo.native_view.Registry,
     leader: default_leader.State = .{},
     pending_ui_action: ?UiAction = null,
+    tree_open: bool = false,
 
     fn init(
         allocator: std.mem.Allocator,
@@ -104,7 +105,12 @@ const TuiApp = struct {
 
     fn dispatch(self: *TuiApp, incoming: hondo.terminal.input.Event) !hondo.native_view_runtime.DispatchResult {
         try self.syncFocus();
-        if (isExEntryEvent(incoming) and self.editor.mode == .normal) try self.focusEditor();
+        const ex_entry = isExEntryEvent(incoming) and self.editor.mode == .normal;
+        if (ex_entry) {
+            try self.focusEditor();
+        } else if (self.tree_open and !self.editor.commandOpen()) {
+            try self.focusTree();
+        }
         const before_buffer_id = self.editor.currentBufferConst().id;
         const before = api_observer.capture(self.editor);
         const maybe_event = try self.prepareEvent(incoming);
@@ -130,7 +136,15 @@ const TuiApp = struct {
             grid.height,
         );
         try self.applyPendingUiAction();
-        if (before_buffer_id != self.editor.currentBufferConst().id or isEscapeEvent(incoming)) {
+        if (before_buffer_id != self.editor.currentBufferConst().id) {
+            self.tree_open = false;
+            try self.runtime.eval(
+                "globalThis.__zimCloseTree?.();",
+                "zim-close-tree-after-open.js",
+            );
+            try self.registry.sync(self.scene);
+            try self.syncFocus();
+        } else if (isEscapeEvent(incoming)) {
             try self.registry.sync(self.scene);
         }
         try self.syncFocus();
@@ -147,14 +161,26 @@ const TuiApp = struct {
         try self.syncFocus();
     }
 
+    fn focusTree(self: *TuiApp) !void {
+        try self.runtime.eval(
+            "globalThis.__zimFocusTree?.();",
+            "zim-focus-tree.js",
+        );
+        try self.registry.sync(self.scene);
+        try self.syncFocus();
+    }
+
     fn applyPendingUiAction(self: *TuiApp) !void {
         const action = self.pending_ui_action orelse return;
         self.pending_ui_action = null;
         switch (action) {
-            .toggle_tree => try self.runtime.eval(
-                "globalThis.__zimToggleTree?.();",
-                "zim-toggle-tree.js",
-            ),
+            .toggle_tree => {
+                self.tree_open = !self.tree_open;
+                try self.runtime.eval(
+                    "globalThis.__zimToggleTree?.();",
+                    "zim-toggle-tree.js",
+                );
+            },
             .toggle_zen => try self.runtime.eval(
                 "globalThis.__zimToggleZen?.();",
                 "zim-toggle-zen.js",
@@ -199,6 +225,12 @@ const TuiApp = struct {
     }
 
     fn prepareKey(self: *TuiApp, key: hondo.terminal.input.Key) !?hondo.terminal.input.Key {
+        if (key == .escape and self.tree_open and !self.editor.commandOpen()) {
+            self.leader.reset();
+            self.pending_ui_action = .toggle_tree;
+            return null;
+        }
+
         if (key == .enter and self.editor.commandOpen()) {
             if (try self.executePublicCommandLine()) return .escape;
         }
