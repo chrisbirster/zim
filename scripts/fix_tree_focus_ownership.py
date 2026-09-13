@@ -7,7 +7,6 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
         raise SystemExit(f"missing anchor: {label}")
     return text.replace(old, new, 1)
 
-# TUI owns tree keyboard routing instead of relying on one-shot JS focus.
 p = Path('src/tui.zig')
 s = p.read_text()
 s = replace_once(s,
@@ -18,7 +17,6 @@ s = replace_once(s,
     pending_ui_action: ?UiAction = null,
     tree_open: bool = false,
 ''', 'tree state')
-
 s = replace_once(s,
 '''    fn dispatch(self: *TuiApp, incoming: hondo.terminal.input.Event) !hondo.native_view_runtime.DispatchResult {
         try self.syncFocus();
@@ -35,7 +33,6 @@ s = replace_once(s,
         }
         const before_buffer_id = self.editor.currentBufferConst().id;
 ''', 'dispatch focus ownership')
-
 s = replace_once(s,
 '''        try self.applyPendingUiAction();
         if (before_buffer_id != self.editor.currentBufferConst().id or isEscapeEvent(incoming)) {
@@ -57,7 +54,6 @@ s = replace_once(s,
         }
         try self.syncFocus();
 ''', 'post dispatch close')
-
 s = replace_once(s,
 '''    fn focusEditor(self: *TuiApp) !void {
         try self.runtime.eval(
@@ -88,7 +84,6 @@ s = replace_once(s,
     }
 
     fn applyPendingUiAction''', 'focus tree helper')
-
 s = replace_once(s,
 '''        switch (action) {
             .toggle_tree => try self.runtime.eval(
@@ -107,7 +102,6 @@ s = replace_once(s,
             },
             .toggle_zen => try self.runtime.eval(
 ''', 'toggle authoritative state')
-
 s = replace_once(s,
 '''    fn prepareKey(self: *TuiApp, key: hondo.terminal.input.Key) !?hondo.terminal.input.Key {
         if (key == .enter and self.editor.commandOpen()) {
@@ -123,19 +117,19 @@ s = replace_once(s,
 ''', 'escape tree close')
 p.write_text(s)
 
-# JS exposes explicit focus/close operations for Zig's ownership model.
 p = Path('ui/src/bundle.ts')
 s = p.read_text()
 s = replace_once(s,
-'''  __zimFocusEditor?: () => void;
+'''  __zimToggleTree?: () => void;
   __zimToggleZen?: () => void;
+  __zimFocusEditor?: () => void;
 ''',
-'''  __zimFocusEditor?: () => void;
+'''  __zimToggleTree?: () => void;
+  __zimToggleZen?: () => void;
+  __zimFocusEditor?: () => void;
   __zimFocusTree?: () => void;
   __zimCloseTree?: () => void;
-  __zimToggleZen?: () => void;
 ''', 'global types')
-
 s = replace_once(s,
 '''globals.__zimFocusEditor = () => {
   setFocusZone('editor');
@@ -167,14 +161,15 @@ globals.__zimCloseTree = () => {
 
 globals.__zimToggleZen = () => {
 ''', 'global implementations')
-
 s = replace_once(s,
-'''  globals.__zimFocusEditor = undefined;
+'''  globals.__zimToggleTree = undefined;
   globals.__zimToggleZen = undefined;
+  globals.__zimFocusEditor = undefined;
 ''',
-'''  globals.__zimFocusEditor = undefined;
+'''  globals.__zimToggleTree = undefined;
+  globals.__zimToggleZen = undefined;
+  globals.__zimFocusEditor = undefined;
   globals.__zimFocusTree = undefined;
   globals.__zimCloseTree = undefined;
-  globals.__zimToggleZen = undefined;
 ''', 'global cleanup')
 p.write_text(s)
