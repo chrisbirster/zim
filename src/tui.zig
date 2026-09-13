@@ -104,6 +104,8 @@ const TuiApp = struct {
 
     fn dispatch(self: *TuiApp, incoming: hondo.terminal.input.Event) !hondo.native_view_runtime.DispatchResult {
         try self.syncFocus();
+        if (isExEntryEvent(incoming) and self.editor.mode == .normal) try self.focusEditor();
+        const before_buffer_id = self.editor.currentBufferConst().id;
         const before = api_observer.capture(self.editor);
         const maybe_event = try self.prepareEvent(incoming);
         if (maybe_event == null) {
@@ -128,9 +130,21 @@ const TuiApp = struct {
             grid.height,
         );
         try self.applyPendingUiAction();
+        if (before_buffer_id != self.editor.currentBufferConst().id or isEscapeEvent(incoming)) {
+            try self.registry.sync(self.scene);
+        }
         try self.syncFocus();
         try api_observer.emitChanges(self.api, self.editor, before);
         return result;
+    }
+
+    fn focusEditor(self: *TuiApp) !void {
+        try self.runtime.eval(
+            "globalThis.__zimFocusEditor?.();",
+            "zim-focus-editor.js",
+        );
+        try self.registry.sync(self.scene);
+        try self.syncFocus();
     }
 
     fn applyPendingUiAction(self: *TuiApp) !void {
@@ -452,6 +466,23 @@ fn readTerminalEvent(fd: c_int) !?hondo.terminal.input.Event {
         .{ .key = .{ .codepoint = 0xfffd } };
 }
 
+fn isExEntryEvent(event: hondo.terminal.input.Event) bool {
+    return switch (event) {
+        .key => |key| switch (key) {
+            .codepoint => |cp| cp == ':',
+            else => false,
+        },
+        else => false,
+    };
+}
+
+fn isEscapeEvent(event: hondo.terminal.input.Event) bool {
+    return switch (event) {
+        .key => |key| key == .escape,
+        else => false,
+    };
+}
+
 fn isImmediateQuitEvent(event: hondo.terminal.input.Event) bool {
     return switch (event) {
         .key => |key| switch (key) {
@@ -516,6 +547,7 @@ test "q and q! quit reliably from the Hondo command line" {
     try std.testing.expect(editor.quit_requested);
 
     editor.quit_requested = false;
+    editor.mode = .normal;
     try editor.setText("modified");
     _ = try app.dispatch(.{ .key = .{ .codepoint = ':' } });
     _ = try app.dispatch(.{ .key = .{ .codepoint = 'q' } });

@@ -527,7 +527,24 @@ fn hashBytes(bytes: []const u8) u64 {
 
 fn translateKey(key: hondo.terminal.input.Key) ?editor_module.Key {
     return switch (key) {
-        .codepoint => |cp| .{ .codepoint = cp },
+        // The currently pinned Hondo decoder exposes Ctrl-C explicitly and
+        // preserves the other legacy C0 control bytes as codepoints. Translate
+        // those bytes here so interactive Vim controls reach the same grammar as
+        // headless Editor.handleKey tests.
+        .codepoint => |cp| switch (cp) {
+            0x02 => .ctrl_b,
+            0x04 => .ctrl_d,
+            0x05 => .ctrl_e,
+            0x06 => .ctrl_f,
+            0x0b => .ctrl_k,
+            0x0c => .ctrl_l,
+            0x0f => .ctrl_o,
+            0x12 => .ctrl_r,
+            0x15 => .ctrl_u,
+            0x16 => .ctrl_v,
+            0x19 => .ctrl_y,
+            else => .{ .codepoint = cp },
+        },
         .enter => .enter,
         .backspace => .backspace,
         .tab => .tab,
@@ -641,6 +658,7 @@ fn paintWindow(
     bounds: hondo.native_view.Bounds,
 ) !void {
     const window = editor.windowById(window_id) orelse return;
+    window.viewport_height = @max(@as(usize, 1), bounds.height);
     const buffer = editor.bufferById(window.buffer_id) orelse return;
     ensureCursorVisible(editor, window_id, bounds.height);
 

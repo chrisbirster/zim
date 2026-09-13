@@ -38,17 +38,21 @@ pub const Key = union(enum) {
     tab,
     shift_tab,
     escape,
+    ctrl_b,
     ctrl_c,
-    ctrl_r,
-    ctrl_v,
-    ctrl_o,
-    ctrl_i,
+    ctrl_d,
+    ctrl_e,
+    ctrl_f,
     ctrl_h,
+    ctrl_i,
     ctrl_j,
     ctrl_k,
     ctrl_l,
+    ctrl_o,
+    ctrl_r,
     ctrl_u,
-    ctrl_d,
+    ctrl_v,
+    ctrl_y,
     up,
     down,
     left,
@@ -1047,6 +1051,17 @@ pub const Editor = struct {
                 break :blk true;
             },
             .codepoint => |cp| blk: {
+                if (self.pending_g) {
+                    self.pending_g = false;
+                    if (cp == 'e' or cp == 'E') {
+                        const motion_count = self.operator_count * self.takeCount();
+                        const range = self.previousEndMotionRange(cp == 'E', motion_count);
+                        try self.applyOperator(op, range);
+                        break :blk true;
+                    }
+                    self.resetOperator();
+                    break :blk false;
+                }
                 if (cp >= '1' and cp <= '9') {
                     const slot: usize = @intCast(cp - '0');
                     if (slot <= self.pins.count() and try self.pinJumpSlot(slot, true)) self.closePinSwitcher();
@@ -1074,6 +1089,11 @@ pub const Editor = struct {
                 self.resetPending();
                 break :blk true;
             },
+            .enter => blk: {
+                self.moveRelativeFirstNonBlank(1, self.takeCount());
+                break :blk true;
+            },
+            .backspace => self.repeatMotion(.left, self.takeCount()),
             .left => self.repeatMotion(.left, self.takeCount()),
             .right => self.repeatMotion(.right, self.takeCount()),
             .up => self.repeatMotion(.up, self.takeCount()),
@@ -1092,11 +1112,27 @@ pub const Editor = struct {
                 break :blk true;
             },
             .ctrl_u => blk: {
-                self.pageMove(-1);
+                self.pageMove(-1, false, self.takeCount());
                 break :blk true;
             },
             .ctrl_d => blk: {
-                self.pageMove(1);
+                self.pageMove(1, false, self.takeCount());
+                break :blk true;
+            },
+            .ctrl_b => blk: {
+                self.pageMove(-1, true, self.takeCount());
+                break :blk true;
+            },
+            .ctrl_f => blk: {
+                self.pageMove(1, true, self.takeCount());
+                break :blk true;
+            },
+            .ctrl_e => blk: {
+                self.scrollViewport(1, self.takeCount());
+                break :blk true;
+            },
+            .ctrl_y => blk: {
+                self.scrollViewport(-1, self.takeCount());
                 break :blk true;
             },
             .ctrl_h => blk: {
@@ -1198,6 +1234,16 @@ pub const Editor = struct {
                 self.count_prefix = 0;
                 return true;
             }
+            if (cp == 'e' or cp == 'E') {
+                const ge_count = self.takeCount();
+                for (0..ge_count) |_| {
+                    self.currentWindow().cursor = if (cp == 'E')
+                        previousWORDend(self.text(), self.cursor())
+                    else
+                        previousWordEnd(self.text(), self.cursor());
+                }
+                return true;
+            }
             if (cp == 'p') return self.openPinSwitcher();
             if (cp == ';') return self.changeListMove(-1);
             if (cp == ',') return self.changeListMove(1);
@@ -1213,12 +1259,24 @@ pub const Editor = struct {
                 for (0..count) |_| self.moveWordForward();
                 break :blk true;
             },
+            'W' => blk: {
+                for (0..count) |_| self.moveWORDForward();
+                break :blk true;
+            },
             'b' => blk: {
                 for (0..count) |_| self.moveWordBackward();
                 break :blk true;
             },
+            'B' => blk: {
+                for (0..count) |_| self.moveWORDBackward();
+                break :blk true;
+            },
             'e' => blk: {
                 for (0..count) |_| self.moveWordEnd();
+                break :blk true;
+            },
+            'E' => blk: {
+                for (0..count) |_| self.moveWORDEnd();
                 break :blk true;
             },
             '0' => blk: {
@@ -1239,7 +1297,43 @@ pub const Editor = struct {
                 break :blk true;
             },
             'G' => blk: {
-                if (count > 1) self.moveToLine(count - 1) else self.currentWindow().cursor = self.text().len;
+                if (count > 1) self.moveToLine(count - 1) else self.moveToLastLine();
+                break :blk true;
+            },
+            'H' => blk: {
+                self.moveViewport(.top, count);
+                break :blk true;
+            },
+            'M' => blk: {
+                self.moveViewport(.middle, count);
+                break :blk true;
+            },
+            'L' => blk: {
+                self.moveViewport(.bottom, count);
+                break :blk true;
+            },
+            '+' => blk: {
+                self.moveRelativeFirstNonBlank(1, count);
+                break :blk true;
+            },
+            '-' => blk: {
+                self.moveRelativeFirstNonBlank(-1, count);
+                break :blk true;
+            },
+            '_' => blk: {
+                self.moveRelativeFirstNonBlank(1, count - 1);
+                break :blk true;
+            },
+            '|' => blk: {
+                self.moveToColumn(count - 1);
+                break :blk true;
+            },
+            '*' => blk: {
+                _ = try self.searchWordUnderCursor(true);
+                break :blk true;
+            },
+            '#' => blk: {
+                _ = try self.searchWordUnderCursor(false);
                 break :blk true;
             },
             'i' => blk: {
@@ -1270,6 +1364,40 @@ pub const Editor = struct {
                 for (0..count) |_| if (!(try self.deleteCharacter())) break;
                 self.finishUndoGroup();
                 try self.finishChange();
+                break :blk true;
+            },
+            'X' => blk: {
+                try self.beginChange(key);
+                for (0..count) |_| if (!(try self.deleteCharacterBackward())) break;
+                self.finishUndoGroup();
+                try self.finishChange();
+                break :blk true;
+            },
+            's' => blk: {
+                try self.beginChange(key);
+                for (0..count) |_| if (!(try self.deleteCharacter())) break;
+                self.mode = .insert;
+                break :blk true;
+            },
+            'S' => blk: {
+                try self.beginChange(key);
+                try self.applyOperator(.change, self.lineRange(self.cursor(), count));
+                break :blk true;
+            },
+            'C' => blk: {
+                try self.beginChange(key);
+                const range = self.motionRange('$', 1) orelse self.lineRange(self.cursor(), 1);
+                try self.applyOperator(.change, range);
+                break :blk true;
+            },
+            'D' => blk: {
+                try self.beginChange(key);
+                const range = self.motionRange('$', 1) orelse self.lineRange(self.cursor(), 1);
+                try self.applyOperator(.delete, range);
+                break :blk true;
+            },
+            'Y' => blk: {
+                try self.applyOperator(.yank, self.lineRange(self.cursor(), count));
                 break :blk true;
             },
             'd', 'c', 'y' => blk: {
@@ -1487,6 +1615,10 @@ pub const Editor = struct {
                     self.pending_text_object = if (cp == 'i') .inner else .around;
                     break :blk true;
                 }
+                if (cp == 'g') {
+                    self.pending_g = true;
+                    break :blk true;
+                }
                 const op_char: u21 = switch (op) {
                     .delete => 'd',
                     .change => 'c',
@@ -1510,6 +1642,13 @@ pub const Editor = struct {
     }
 
     fn handleVisual(self: *Editor, key: Key) !bool {
+        if (self.pending_g) {
+            self.pending_g = false;
+            if (key == .codepoint and key.codepoint == 'g') {
+                self.moveToLine(0);
+                return true;
+            }
+        }
         return switch (key) {
             .escape => blk: {
                 self.mode = .normal;
@@ -1527,10 +1666,16 @@ pub const Editor = struct {
                     'k' => _ = self.moveUp(),
                     'l' => _ = self.moveRight(),
                     'w' => self.moveWordForward(),
+                    'W' => self.moveWORDForward(),
                     'b' => self.moveWordBackward(),
+                    'B' => self.moveWORDBackward(),
                     'e' => self.moveWordEnd(),
+                    'E' => self.moveWORDEnd(),
                     '0' => self.currentWindow().cursor = lineStartAt(self.text(), self.cursor()),
+                    '^' => self.currentWindow().cursor = firstNonBlank(self.text(), lineStartAt(self.text(), self.cursor())),
                     '$' => self.currentWindow().cursor = lineEnd(self.text(), self.cursor()),
+                    'G' => self.moveToLastLine(),
+                    'g' => self.pending_g = true,
                     'y', 'd', 'c' => {
                         const op: Operator = if (cp == 'y') .yank else if (cp == 'd') .delete else .change;
                         if (op != .yank) try self.beginChange(key);
@@ -1793,11 +1938,21 @@ pub const Editor = struct {
             'w' => {
                 for (0..count) |_| target = nextWordStart(self.text(), target);
             },
+            'W' => {
+                for (0..count) |_| target = nextWORDStart(self.text(), target);
+            },
             'b' => {
                 for (0..count) |_| target = previousWordStart(self.text(), target);
             },
+            'B' => {
+                for (0..count) |_| target = previousWORDStart(self.text(), target);
+            },
             'e' => {
                 for (0..count) |_| target = wordEndOffset(self.text(), target);
+                inclusive = true;
+            },
+            'E' => {
+                for (0..count) |_| target = WORDEndOffset(self.text(), target);
                 inclusive = true;
             },
             '0' => target = lineStartAt(self.text(), start),
@@ -1806,6 +1961,21 @@ pub const Editor = struct {
                 target = lineEnd(self.text(), start);
                 inclusive = false;
             },
+            '+', '-', '_' => {
+                const current_line = self.cursorPosition().line - 1;
+                const target_line = if (cp == '-')
+                    current_line -| count
+                else if (cp == '_')
+                    current_line +| (count - 1)
+                else
+                    current_line +| count;
+                const line_start = offsetForLineColumn(self.text(), target_line, 0);
+                target = firstNonBlank(self.text(), line_start);
+            },
+            '|' => {
+                target = offsetForLineCodepointColumn(self.text(), self.cursorPosition().line - 1, count - 1);
+            },
+            'H', 'M', 'L' => target = self.viewportTargetOffset(cp, count),
             '%' => target = matchingDelimiterOffset(self.text(), start) orelse return null,
             '(', ')' => {
                 for (0..count) |_| target = sentenceBoundary(self.text(), target, cp == ')');
@@ -1928,6 +2098,14 @@ pub const Editor = struct {
         if (self.cursor() >= self.text().len) return false;
         const end = nextCodepointStart(self.text(), self.cursor());
         try self.deleteRange(.{ .start = self.cursor(), .end = end });
+        return true;
+    }
+
+    fn deleteCharacterBackward(self: *Editor) !bool {
+        const cursor = self.cursor();
+        if (cursor == 0 or cursor == lineStartAt(self.text(), cursor)) return false;
+        const start = previousCodepointStartSafe(self.text(), cursor);
+        try self.deleteRange(.{ .start = start, .end = cursor });
         return true;
     }
 
@@ -2121,16 +2299,113 @@ pub const Editor = struct {
         self.currentWindow().cursor = wordEndOffset(self.text(), self.cursor());
     }
 
+    fn moveWORDForward(self: *Editor) void {
+        self.currentWindow().cursor = nextWORDStart(self.text(), self.cursor());
+    }
+
+    fn moveWORDBackward(self: *Editor) void {
+        self.currentWindow().cursor = previousWORDStart(self.text(), self.cursor());
+    }
+
+    fn moveWORDEnd(self: *Editor) void {
+        self.currentWindow().cursor = WORDEndOffset(self.text(), self.cursor());
+    }
+
     fn moveToLine(self: *Editor, line_index: usize) void {
         self.currentWindow().cursor = offsetForLineColumn(self.text(), line_index, 0);
     }
 
-    fn pageMove(self: *Editor, direction: i8) void {
-        for (0..10) |_| {
+    fn moveToLastLine(self: *Editor) void {
+        const bytes = self.text();
+        if (bytes.len == 0) {
+            self.currentWindow().cursor = 0;
+            return;
+        }
+        var probe = bytes.len;
+        if (probe > 0 and bytes[probe - 1] == '\n') probe -= 1;
+        const start = lineStartAt(bytes, probe);
+        self.currentWindow().cursor = firstNonBlank(bytes, start);
+    }
+
+    const ViewportTarget = enum { top, middle, bottom };
+
+    fn viewportTargetOffset(self: *const Editor, cp: u21, count: usize) usize {
+        const window = self.currentWindowConst();
+        const height = @max(@as(usize, 1), window.viewport_height);
+        const line = switch (cp) {
+            'H' => window.scroll_line +| (count - 1),
+            'M' => window.scroll_line +| (height / 2),
+            'L' => window.scroll_line +| (height -| count),
+            else => window.scroll_line,
+        };
+        const start = offsetForLineColumn(self.text(), line, 0);
+        return firstNonBlank(self.text(), start);
+    }
+
+    fn moveViewport(self: *Editor, target: ViewportTarget, count: usize) void {
+        const cp: u21 = switch (target) {
+            .top => 'H',
+            .middle => 'M',
+            .bottom => 'L',
+        };
+        self.currentWindow().cursor = self.viewportTargetOffset(cp, count);
+    }
+
+    fn moveRelativeFirstNonBlank(self: *Editor, direction: i8, count: usize) void {
+        const current_line = self.cursorPosition().line - 1;
+        const line = if (direction < 0) current_line -| count else current_line +| count;
+        const start = offsetForLineColumn(self.text(), line, 0);
+        self.currentWindow().cursor = firstNonBlank(self.text(), start);
+    }
+
+    fn moveToColumn(self: *Editor, zero_based_column: usize) void {
+        self.currentWindow().cursor = offsetForLineCodepointColumn(
+            self.text(),
+            self.cursorPosition().line - 1,
+            zero_based_column,
+        );
+    }
+
+    fn pageMove(self: *Editor, direction: i8, full_page: bool, count: usize) void {
+        const height = @max(@as(usize, 1), self.currentWindowConst().viewport_height);
+        const amount = (if (full_page) height else @max(@as(usize, 1), height / 2)) * count;
+        for (0..amount) |_| {
             if (direction < 0) {
                 if (!self.moveUp()) break;
             } else if (!self.moveDown()) break;
         }
+    }
+
+    fn scrollViewport(self: *Editor, direction: i8, count: usize) void {
+        const cursor_line = self.cursorPosition().line - 1;
+        const height = @max(@as(usize, 1), self.currentWindowConst().viewport_height);
+        if (direction < 0) {
+            self.currentWindow().scroll_line -|= count;
+            const bottom = self.currentWindowConst().scroll_line + height - 1;
+            if (cursor_line > bottom) self.moveToLine(bottom);
+        } else {
+            self.currentWindow().scroll_line += count;
+            if (cursor_line < self.currentWindowConst().scroll_line) self.moveToLine(self.currentWindowConst().scroll_line);
+        }
+    }
+
+    fn previousEndMotionRange(self: *Editor, big_word: bool, count: usize) Range {
+        const start = self.cursor();
+        var target = start;
+        for (0..count) |_| {
+            target = if (big_word) previousWORDend(self.text(), target) else previousWordEnd(self.text(), target);
+        }
+        const a = @min(start, target);
+        var b = @max(start, target);
+        if (b < self.text().len) b = nextCodepointStart(self.text(), b);
+        return .{ .start = a, .end = b };
+    }
+
+    fn searchWordUnderCursor(self: *Editor, forward: bool) !bool {
+        const range = wordUnderCursor(self.text(), self.cursor()) orelse return false;
+        self.search_pattern.items.len = 0;
+        try self.search_pattern.appendSlice(self.allocator, self.text()[range.start..range.end]);
+        return self.search(forward);
     }
 
     fn finishFind(self: *Editor, pending: FindPending, cp: u21) bool {
@@ -2286,6 +2561,7 @@ pub const Editor = struct {
     fn resetOperator(self: *Editor) void {
         self.pending_operator = null;
         self.pending_text_object = null;
+        self.pending_g = false;
         self.operator_count = 1;
         self.count_prefix = 0;
     }
@@ -2745,6 +3021,103 @@ fn wordEndOffset(bytes: []const u8, cursor: usize) usize {
     return last;
 }
 
+fn nextWORDStart(bytes: []const u8, cursor: usize) usize {
+    var index = @min(cursor, bytes.len);
+    if (index < bytes.len and !isSpaceByte(bytes[index])) {
+        while (index < bytes.len and !isSpaceByte(bytes[index])) index = nextCodepointStart(bytes, index);
+    }
+    while (index < bytes.len and isSpaceByte(bytes[index])) index = nextCodepointStart(bytes, index);
+    return index;
+}
+
+fn previousWORDStart(bytes: []const u8, cursor: usize) usize {
+    if (cursor == 0) return 0;
+    var index = previousCodepointStartSafe(bytes, cursor);
+    while (index > 0 and isSpaceByte(bytes[index])) index = previousCodepointStartSafe(bytes, index);
+    while (index > 0) {
+        const previous = previousCodepointStartSafe(bytes, index);
+        if (isSpaceByte(bytes[previous])) break;
+        index = previous;
+    }
+    return index;
+}
+
+fn WORDEndOffset(bytes: []const u8, cursor: usize) usize {
+    var index = @min(cursor, bytes.len);
+    if (index >= bytes.len) return bytes.len;
+    if (!isSpaceByte(bytes[index])) {
+        const next = nextCodepointStart(bytes, index);
+        if (next < bytes.len and !isSpaceByte(bytes[next])) {
+            var last = index;
+            var scan = index;
+            while (scan < bytes.len and !isSpaceByte(bytes[scan])) {
+                last = scan;
+                scan = nextCodepointStart(bytes, scan);
+            }
+            return last;
+        }
+        index = next;
+    }
+    while (index < bytes.len and isSpaceByte(bytes[index])) index = nextCodepointStart(bytes, index);
+    if (index >= bytes.len) return bytes.len;
+    var last = index;
+    while (index < bytes.len and !isSpaceByte(bytes[index])) {
+        last = index;
+        index = nextCodepointStart(bytes, index);
+    }
+    return last;
+}
+
+fn previousWordEnd(bytes: []const u8, cursor: usize) usize {
+    if (cursor == 0) return 0;
+    var index = previousCodepointStartSafe(bytes, cursor);
+    if (!isSpaceByte(bytes[index])) {
+        const class = isWordByte(bytes[index]);
+        var start = index;
+        while (start > 0) {
+            const previous = previousCodepointStartSafe(bytes, start);
+            if (isSpaceByte(bytes[previous]) or isWordByte(bytes[previous]) != class) break;
+            start = previous;
+        }
+        if (start == 0) return 0;
+        index = previousCodepointStartSafe(bytes, start);
+    }
+    while (index > 0 and isSpaceByte(bytes[index])) index = previousCodepointStartSafe(bytes, index);
+    return index;
+}
+
+fn previousWORDend(bytes: []const u8, cursor: usize) usize {
+    if (cursor == 0) return 0;
+    var index = previousCodepointStartSafe(bytes, cursor);
+    if (!isSpaceByte(bytes[index])) {
+        var start = index;
+        while (start > 0) {
+            const previous = previousCodepointStartSafe(bytes, start);
+            if (isSpaceByte(bytes[previous])) break;
+            start = previous;
+        }
+        if (start == 0) return 0;
+        index = previousCodepointStartSafe(bytes, start);
+    }
+    while (index > 0 and isSpaceByte(bytes[index])) index = previousCodepointStartSafe(bytes, index);
+    return index;
+}
+
+fn wordUnderCursor(bytes: []const u8, cursor: usize) ?Range {
+    if (bytes.len == 0) return null;
+    var at = @min(cursor, bytes.len - 1);
+    if (!isWordByte(bytes[at])) return null;
+    var start = at;
+    while (start > 0) {
+        const previous = previousCodepointStartSafe(bytes, start);
+        if (!isWordByte(bytes[previous])) break;
+        start = previous;
+    }
+    var end = nextCodepointStart(bytes, at);
+    while (end < bytes.len and isWordByte(bytes[end])) end = nextCodepointStart(bytes, end);
+    return .{ .start = start, .end = end };
+}
+
 fn letterIndex(cp: u21) ?usize {
     if (cp >= 'a' and cp <= 'z') return @intCast(cp - 'a');
     if (cp >= 'A' and cp <= 'Z') return @intCast(cp - 'A');
@@ -3082,6 +3455,66 @@ test "classic find repeat percent and operator post-counts behave like Vim" {
     _ = try editor.handleKey(.{ .codepoint = '2' });
     _ = try editor.handleKey(.{ .codepoint = 'w' });
     try std.testing.expect(std.mem.endsWith(u8, editor.text(), "now"));
+}
+
+test "v1 WORD ge viewport line and search motions are Vim-like" {
+    var editor = try Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    try editor.setText("alpha.beta gamma\n  delta epsilon\nzeta eta theta\nlast line\n");
+    editor.currentWindow().viewport_height = 3;
+
+    _ = try editor.handleKey(.{ .codepoint = 'W' });
+    try std.testing.expectEqualStrings("gamma", editor.text()[editor.cursor() .. editor.cursor() + 5]);
+    _ = try editor.handleKey(.{ .codepoint = 'B' });
+    try std.testing.expectEqual(@as(usize, 0), editor.cursor());
+    _ = try editor.handleKey(.{ .codepoint = 'E' });
+    try std.testing.expectEqual(@as(usize, "alpha.beta".len - 1), editor.cursor());
+
+    editor.setCursor(std.mem.indexOf(u8, editor.text(), "epsilon") orelse unreachable);
+    _ = try editor.handleKey(.{ .codepoint = 'g' });
+    _ = try editor.handleKey(.{ .codepoint = 'e' });
+    try std.testing.expect(editor.cursor() < (std.mem.indexOf(u8, editor.text(), "epsilon") orelse unreachable));
+
+    editor.currentWindow().scroll_line = 1;
+    _ = try editor.handleKey(.{ .codepoint = 'H' });
+    try std.testing.expectEqual(@as(usize, 2), editor.cursorPosition().line);
+    _ = try editor.handleKey(.{ .codepoint = 'L' });
+    try std.testing.expectEqual(@as(usize, 4), editor.cursorPosition().line);
+
+    editor.setCursor(0);
+    _ = try editor.handleKey(.{ .codepoint = '+' });
+    try std.testing.expectEqual(@as(usize, 2), editor.cursorPosition().line);
+    _ = try editor.handleKey(.{ .codepoint = '3' });
+    _ = try editor.handleKey(.{ .codepoint = '|' });
+    try std.testing.expectEqual(@as(usize, 3), editor.cursorPosition().column);
+
+    editor.setCursor(0);
+    _ = try editor.handleKey(.{ .codepoint = '*' });
+    try std.testing.expectEqual(@as(usize, 0), editor.cursor());
+}
+
+test "v1 uppercase edit shortcuts and WORD operators compose" {
+    var editor = try Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    try editor.setText("one.two three four\nsecond line\n");
+
+    _ = try editor.handleKey(.{ .codepoint = 'd' });
+    _ = try editor.handleKey(.{ .codepoint = 'W' });
+    try std.testing.expect(std.mem.startsWith(u8, editor.text(), "three"));
+
+    try editor.setText("one two three\n");
+    editor.setCursor(std.mem.indexOf(u8, editor.text(), "three") orelse unreachable);
+    _ = try editor.handleKey(.{ .codepoint = 'd' });
+    _ = try editor.handleKey(.{ .codepoint = 'g' });
+    _ = try editor.handleKey(.{ .codepoint = 'e' });
+    try std.testing.expect(editor.text().len < "one two three\n".len);
+
+    try editor.setText("abc\ndef\n");
+    editor.setCursor(1);
+    _ = try editor.handleKey(.{ .codepoint = 'X' });
+    try std.testing.expectEqualStrings("bc\ndef\n", editor.text());
+    _ = try editor.handleKey(.{ .codepoint = 'D' });
+    try std.testing.expectEqualStrings("\ndef\n", editor.text());
 }
 
 test "named numbered yank small-delete and black-hole registers are distinct" {

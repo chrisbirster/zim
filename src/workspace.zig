@@ -15,6 +15,7 @@ pub const Window = struct {
     cursor: usize = 0,
     preferred_column: ?usize = null,
     scroll_line: usize = 0,
+    viewport_height: usize = 24,
 };
 
 pub const Split = struct {
