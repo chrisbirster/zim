@@ -17,6 +17,16 @@ import {
   type HondoRefHandle,
 } from '@hondo/solid';
 import { flush } from 'solid-js';
+import {
+  contextSummary as summarizeContext,
+  dashboardVisible as shouldShowDashboard,
+  nativePopupItemsPayload,
+  nextContextIndex,
+  payloadObject,
+  pinsPayload,
+  type NativePopupItem,
+  type PinView,
+} from './state';
 
 const host = new HondoHost(new NativeMutationBridge());
 const restoreHost = installHost(host);
@@ -25,7 +35,7 @@ const [line, setLine] = createSignal(1);
 const [column, setColumn] = createSignal(1);
 const [modified, setModified] = createSignal(false);
 const [path, setPath] = createSignal('[No Name]');
-const [project, setProject] = createSignal('');
+const [project, setProject] = createSignal('.');
 const [status, setStatus] = createSignal('');
 const [commandOpen, setCommandOpen] = createSignal(false);
 const [commandText, setCommandText] = createSignal('');
@@ -34,9 +44,11 @@ const [windows, setWindows] = createSignal(1);
 const [tabs, setTabs] = createSignal(1);
 const [diagnostics, setDiagnostics] = createSignal(0);
 const [symbols, setSymbols] = createSignal(0);
-type PinView = { id: number; path: string; line: number; column: number; label?: string };
-type NativePopupItem = { label: string; detail?: string };
 const [references, setReferences] = createSignal(0);
+const [treeOpen, setTreeOpen] = createSignal(false);
+const [treeRefreshNonce, setTreeRefreshNonce] = createSignal(0);
+const [zenMode, setZenMode] = createSignal(true);
+
 const [pins, setPins] = createSignal<PinView[]>([]);
 const [pinSwitcherOpen, setPinSwitcherOpen] = createSignal(false);
 const [pinSwitcherIndex, setPinSwitcherIndex] = createSignal(0);
@@ -47,57 +59,26 @@ const [nativePopupItems, setNativePopupItems] = createSignal<NativePopupItem[]>(
 const [nativePopupSelected, setNativePopupSelected] = createSignal(0);
 const [terminalWidth, setTerminalWidth] = createSignal(120);
 const [terminalHeight, setTerminalHeight] = createSignal(30);
-const [projectCollapsed, setProjectCollapsed] = createSignal(false);
-const [contextCollapsed, setContextCollapsed] = createSignal(false);
 const [contextIndex, setContextIndex] = createSignal(0);
-const [focusZone, setFocusZone] = createSignal<'project' | 'editor' | 'context'>('editor');
+const [focusZone, setFocusZone] = createSignal<'tree' | 'editor' | 'context'>('editor');
 
 const contextNames = ['Symbols', 'Diagnostics', 'References', 'Git', 'Quickfix', 'Tests'] as const;
-let projectRef: HondoRefHandle | undefined;
+let treeRef: HondoRefHandle | undefined;
 let editorRef: HondoRefHandle | undefined;
 let contextRef: HondoRefHandle | undefined;
 
 type ZimGlobals = typeof globalThis & {
   __zimUiDispose?: () => void;
   __zimJsKeyEvents?: number;
+  __zimToggleTree?: () => void;
+  __zimToggleZen?: () => void;
+  __zimFocusEditor?: () => void;
+  __zimFocusTree?: () => void;
+  __zimCloseTree?: () => void;
 };
 
 const globals = globalThis as ZimGlobals;
 globals.__zimJsKeyEvents = 0;
-
-function payloadObject(payload: HondoValue): Record<string, HondoValue> | undefined {
-  if (!payload || Array.isArray(payload) || typeof payload !== 'object') return undefined;
-  return payload as Record<string, HondoValue>;
-}
-
-function pinsPayload(value: HondoValue): PinView[] {
-  if (!Array.isArray(value)) return [];
-  const result: PinView[] = [];
-  for (const candidate of value) {
-    const item = payloadObject(candidate);
-    if (!item) continue;
-    if (typeof item.id !== 'number' || typeof item.path !== 'string' || typeof item.line !== 'number' || typeof item.column !== 'number') continue;
-    result.push({
-      id: item.id,
-      path: item.path,
-      line: item.line,
-      column: item.column,
-      label: typeof item.label === 'string' ? item.label : undefined,
-    });
-  }
-  return result;
-}
-
-function nativePopupItemsPayload(value: HondoValue): NativePopupItem[] {
-  if (!Array.isArray(value)) return [];
-  const result: NativePopupItem[] = [];
-  for (const candidate of value) {
-    const item = payloadObject(candidate);
-    if (!item || typeof item.label !== 'string') continue;
-    result.push({ label: item.label, detail: typeof item.detail === 'string' ? item.detail : undefined });
-  }
-  return result;
-}
 
 function keyPayload(event: HondoNodeEvent): { kind?: string; codepoint?: number } | undefined {
   const value = payloadObject(event.payload);
@@ -108,48 +89,24 @@ function keyPayload(event: HondoNodeEvent): { kind?: string; codepoint?: number 
   };
 }
 
-function isCodepoint(event: HondoNodeEvent, expected: string): boolean {
-  const key = keyPayload(event);
-  return key?.kind === 'codepoint'
-    && key.codepoint !== undefined
-    && String.fromCodePoint(key.codepoint) === expected;
-}
-
-function dirname(value: string): string {
-  if (!value || value === '[No Name]') return '';
-  const slash = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
-  return slash <= 0 ? '' : value.slice(0, slash);
-}
-
 function projectLabel(): string {
-  return project() || dirname(path()) || '[No Project]';
+  return project() || '.';
 }
 
-function projectRail(): boolean {
-  return projectCollapsed() || terminalWidth() < 72;
-}
-
-function contextRail(): boolean {
-  return contextCollapsed() || terminalWidth() < 108;
+function dashboardVisible(): boolean {
+  return shouldShowDashboard({
+    path: path(),
+    modified: modified(),
+    mode: mode(),
+    commandOpen: commandOpen(),
+    treeOpen: treeOpen(),
+    pinSwitcherOpen: pinSwitcherOpen(),
+    nativePopupOpen: nativePopupOpen(),
+  });
 }
 
 function contextSummary(): string {
-  switch (contextIndex()) {
-    case 0:
-      return symbols() === 0 ? 'No symbol result yet' : `${symbols()} symbol${symbols() === 1 ? '' : 's'}`;
-    case 1:
-      return diagnostics() === 0 ? 'No diagnostics' : `${diagnostics()} diagnostic${diagnostics() === 1 ? '' : 's'}`;
-    case 2:
-      return references() === 0 ? 'No reference result yet' : `${references()} reference${references() === 1 ? '' : 's'}`;
-    case 3:
-      return 'Git context surface';
-    case 4:
-      return 'Quickfix context surface';
-    case 5:
-      return 'Tests context surface';
-    default:
-      return '';
-  }
+  return summarizeContext(contextIndex(), symbols(), diagnostics(), references());
 }
 
 function onNativeState(event: HondoNodeEvent): void {
@@ -180,29 +137,29 @@ function onNativeState(event: HondoNodeEvent): void {
   if (typeof value.popupSelected === 'number') setNativePopupSelected(value.popupSelected);
   if (typeof value.terminalWidth === 'number') setTerminalWidth(value.terminalWidth);
   if (typeof value.terminalHeight === 'number') setTerminalHeight(value.terminalHeight);
-  flush();
-}
-
-function projectKey(event: HondoNodeEvent): void {
-  if (isCodepoint(event, 'c') || keyPayload(event)?.kind === 'enter') {
-    setProjectCollapsed(value => !value);
-    event.preventDefault();
+  if (value.treeOpenedFile === true || value.treeClose === true) {
+    setTreeOpen(false);
+    setFocusZone('editor');
     flush();
+    editorRef?.focus();
+    return;
   }
+  flush();
 }
 
 function contextKey(event: HondoNodeEvent): void {
   const key = keyPayload(event);
-  if (isCodepoint(event, 'c') || key?.kind === 'enter') {
-    setContextCollapsed(value => !value);
+  if (key?.kind === 'escape') {
+    setZenMode(true);
+    setFocusZone('editor');
     event.preventDefault();
     flush();
+    editorRef?.focus();
     return;
   }
-  if (!contextRail() && (key?.kind === 'left' || key?.kind === 'right')) {
-    const direction = key.kind === 'right' ? 1 : -1;
-    const next = (contextIndex() + direction + contextNames.length) % contextNames.length;
-    setContextIndex(next);
+  if (key?.kind === 'left' || key?.kind === 'right') {
+    const direction: 1 | -1 = key.kind === 'right' ? 1 : -1;
+    setContextIndex(nextContextIndex(contextIndex(), direction, contextNames.length));
     event.preventDefault();
     flush();
   }
@@ -223,64 +180,62 @@ const contextTabs = contextNames.map((name, index) =>
   }),
 );
 
-const projectPanel = Column({
-  focusable: true,
-  ref: handle => {
-    projectRef = handle;
-  },
-  onFocusIn: () => setFocusZone('project'),
-  onKey: projectKey,
+const projectTreePanel = Column({
   get style() {
     return {
-      width: projectRail() ? 3 : 24,
-      minWidth: projectRail() ? 3 : 24,
+      width: terminalWidth() < 90 ? 28 : 34,
+      minWidth: terminalWidth() < 90 ? 28 : 34,
+      minHeight: 1,
+      background: '#171722',
+      paddingX: 1,
       clip: true,
-      background: focusZone() === 'project' ? '#151923' : '#0d1118',
-      paddingX: projectRail() ? 0 : 1,
     };
   },
-  get children() {
-    if (projectRail()) {
-      return [
-        Text({ style: { bold: true, foreground: 'bright-magenta' }, children: ' P ' }),
-      ];
-    }
-    return [
-      Text({ style: { bold: true, foreground: 'bright-magenta' }, children: 'PROJECT' }),
-      Text({ style: { dim: true }, children: () => projectLabel() }),
-      Text({ children: () => `Current: ${path()}` }),
-      Text({ children: () => `Open buffers: ${buffers()}` }),
-      Text({ style: { bold: true, foreground: 'bright-yellow' }, children: () => `PINS (${pins().length})` }),
-      ...pins().slice(0, 9).map((pin, index) =>
-        Text({
-          get children() {
-            const name = pin.label || pin.path;
-            return `${index + 1} ${name} :${pin.line}`;
-          },
-          style: { dim: true },
-        }),
-      ),
-      Spacer({ grow: 1 }),
-      Text({ style: { dim: true }, children: 'c collapse · Tab focus' }),
-    ];
-  },
+  children: [
+    Text({
+      style: { bold: true, foreground: 'bright-cyan' },
+      children: () => ` ${projectLabel()} `,
+    }),
+    NativeView({
+      nativeType: 'zim.editor',
+      get nativeProps() {
+        return { role: 'project-tree', refreshNonce: treeRefreshNonce() };
+      },
+      autoFocus: true,
+      ref: handle => {
+        treeRef = handle;
+      },
+      onFocusIn: () => setFocusZone('tree'),
+      onNativeState,
+      style: { grow: 1, minHeight: 1, background: '#171722' },
+    }),
+    Text({
+      style: { dim: true },
+      children: '<leader>e close · j/k move · Enter open',
+    }),
+  ],
 });
 
 const editorPanel = Column({
-  style: { grow: 1, minWidth: 24, maxWidth: 110, minHeight: 1, background: '#080b10' },
+  get style() {
+    return {
+      grow: 1,
+      minWidth: 24,
+      maxWidth: treeOpen() ? 120 : (zenMode() ? 104 : 116),
+      minHeight: 1,
+      background: '#080b10',
+    };
+  },
   children: [
     NativeView({
       nativeType: 'zim.editor',
-      nativeProps: { shell: 'hondo', protocol: 3, workspace: 'zen' },
+      nativeProps: { shell: 'hondo', protocol: 4, workspace: 'zen', role: 'editor' },
       autoFocus: true,
       ref: handle => {
         editorRef = handle;
       },
       onFocusIn: () => setFocusZone('editor'),
       onNativeState,
-      onKey: () => {
-        globals.__zimJsKeyEvents = (globals.__zimJsKeyEvents ?? 0) + 1;
-      },
       style: { grow: 1, minHeight: 1, background: '#080b10' },
     }),
   ],
@@ -293,45 +248,70 @@ const contextPanel = Column({
   },
   onFocusIn: () => setFocusZone('context'),
   onKey: contextKey,
-  get style() {
-    return {
-      width: contextRail() ? 3 : 28,
-      minWidth: contextRail() ? 3 : 28,
-      clip: true,
-      background: focusZone() === 'context' ? '#151923' : '#0d1118',
-      paddingX: contextRail() ? 0 : 1,
-    };
+  style: {
+    width: 28,
+    minWidth: 28,
+    clip: true,
+    background: '#11151d',
+    paddingX: 1,
   },
-  get children() {
-    if (contextRail()) {
-      return [
-        Text({ style: { bold: true, foreground: 'bright-cyan' }, children: ' C ' }),
-      ];
-    }
-    return [
-      Text({ style: { bold: true, foreground: 'bright-cyan' }, children: 'CONTEXT' }),
-      Row({ style: { gap: 1, clip: true }, children: contextTabs }),
-      Text({ style: { foreground: 'bright-white' }, children: () => contextSummary() }),
-      Text({ style: { dim: true }, children: () => `File: ${path()}` }),
-      Spacer({ grow: 1 }),
-      Text({ style: { dim: true }, children: '←/→ surface · c collapse' }),
-    ];
+  children: [
+    Text({ style: { bold: true, foreground: 'bright-cyan' }, children: 'CONTEXT' }),
+    Row({ style: { gap: 1, clip: true }, children: contextTabs }),
+    Text({ style: { foreground: 'bright-white' }, children: () => contextSummary() }),
+    Text({ style: { dim: true }, children: () => `File: ${path()}` }),
+    Spacer({ grow: 1 }),
+    Text({ style: { dim: true }, children: '←/→ surface · Esc zen' }),
+  ],
+});
+
+const dashboard = Popup({
+  get x() {
+    return Math.max(2, Math.floor((terminalWidth() - 64) / 2));
   },
+  get y() {
+    return Math.max(3, Math.floor((terminalHeight() - 20) / 2));
+  },
+  zIndex: 10,
+  style: { width: 64, paddingX: 2, background: '#080b10' },
+  children: Column({
+    children: [
+      Text({ style: { bold: true, foreground: 'bright-magenta' }, children: '        ███████╗██╗███╗   ███╗' }),
+      Text({ style: { bold: true, foreground: 'bright-magenta' }, children: '        ╚══███╔╝██║████╗ ████║' }),
+      Text({ style: { bold: true, foreground: 'bright-magenta' }, children: '          ███╔╝ ██║██╔████╔██║' }),
+      Text({ style: { bold: true, foreground: 'bright-magenta' }, children: '         ███╔╝  ██║██║╚██╔╝██║' }),
+      Text({ style: { bold: true, foreground: 'bright-magenta' }, children: '        ███████╗██║██║ ╚═╝ ██║' }),
+      Text({ style: { bold: true, foreground: 'bright-magenta' }, children: '        ╚══════╝╚═╝╚═╝     ╚═╝' }),
+      Text({ children: '' }),
+      Text({ style: { bold: true, foreground: 'bright-yellow' }, children: '                 ZIM v1.0.0' }),
+      Text({ style: { dim: true }, children: '             your new code overlord.' }),
+      Text({ children: '' }),
+      Text({ children: '      <leader>e     project explorer' }),
+      Text({ children: '      <leader>a     pin current file/location' }),
+      Text({ children: '      <leader>h     open pins (Harpoon)' }),
+      Text({ children: '      <leader>z     toggle Zen workspace' }),
+      Text({ children: '      :help         built-in documentation' }),
+      Text({ children: '      :checkhealth  runtime diagnostics' }),
+      Text({ children: '      :q            quit' }),
+      Text({ children: '' }),
+      Text({ style: { dim: true }, children: '             leader is <Space>' }),
+    ],
+  }),
 });
 
 const pinSwitcher = Popup({
   get x() {
-    return Math.max(0, Math.floor((terminalWidth() - 52) / 2));
+    return Math.max(0, Math.floor((terminalWidth() - 62) / 2));
   },
   get y() {
-    return Math.max(1, Math.floor((terminalHeight() - Math.min(14, pins().length + 5)) / 2));
+    return Math.max(1, Math.floor((terminalHeight() - Math.min(16, pins().length + 5)) / 2));
   },
   zIndex: 20,
-  style: { width: 52, paddingX: 1, background: '#20242c' },
+  style: { width: 62, paddingX: 1, background: '#20242c' },
   children: Column({
     children: [
-      Text({ style: { bold: true, foreground: 'bright-magenta' }, children: 'PIN SWITCHER' }),
-      Text({ style: { dim: true }, children: '1-9 jump · j/k select · Enter jump · Esc close' }),
+      Text({ style: { bold: true, foreground: 'bright-magenta' }, children: 'HARPOON' }),
+      Text({ style: { dim: true }, children: 'j/k select · Enter jump · 1-9 jump · Esc close' }),
       () => pins().map((pin, index) =>
         Text({
           get style() {
@@ -343,7 +323,7 @@ const pinSwitcher = Popup({
           },
           get children() {
             const label = pin.label ? `${pin.label} · ` : '';
-            return `${index + 1} ${label}${pin.path}:${pin.line}:${pin.column}`;
+            return `${index + 1}  ${label}${pin.path}:${pin.line}:${pin.column}`;
           },
         }),
       ),
@@ -367,7 +347,11 @@ const nativePopup = Popup({
       () => nativePopupItems().map((item, index) =>
         Text({
           get style() {
-            return { bold: index === nativePopupSelected(), reverse: index === nativePopupSelected(), foreground: index === nativePopupSelected() ? 'bright-cyan' : 'bright-white' } as const;
+            return {
+              bold: index === nativePopupSelected(),
+              reverse: index === nativePopupSelected(),
+              foreground: index === nativePopupSelected() ? 'bright-cyan' : 'bright-white',
+            } as const;
           },
           get children() {
             return item.detail ? `${item.label}  ${item.detail}` : item.label;
@@ -378,14 +362,58 @@ const nativePopup = Popup({
   }),
 });
 
+globals.__zimToggleTree = () => {
+  const next = !treeOpen();
+  setTreeOpen(next);
+  if (next) {
+    setTreeRefreshNonce(value => value + 1);
+    setFocusZone('tree');
+  } else {
+    setFocusZone('editor');
+  }
+  flush();
+  if (next) treeRef?.focus();
+  else editorRef?.focus();
+};
+
+globals.__zimFocusEditor = () => {
+  setFocusZone('editor');
+  flush();
+  editorRef?.focus();
+};
+
+globals.__zimFocusTree = () => {
+  if (!treeOpen()) return;
+  setFocusZone('tree');
+  flush();
+  treeRef?.focus();
+};
+
+globals.__zimCloseTree = () => {
+  if (treeOpen()) setTreeOpen(false);
+  setFocusZone('editor');
+  flush();
+  editorRef?.focus();
+};
+
+globals.__zimToggleZen = () => {
+  const next = !zenMode();
+  setZenMode(next);
+  setFocusZone(next ? 'editor' : 'context');
+  flush();
+  if (next) editorRef?.focus();
+  else contextRef?.focus();
+};
+
 const disposeRender = render(() =>
   Column({
     style: { minWidth: 1, minHeight: 1, background: '#080b10' },
     children: [
+      () => (dashboardVisible() ? dashboard : null),
       () => (nativePopupOpen() ? nativePopup : null),
       () => (pinSwitcherOpen() ? pinSwitcher : null),
       Row({
-        style: { height: 1, background: '#161b22' },
+        style: { height: 1, background: '#17172b' },
         children: [
           Text({
             style: { bold: true, foreground: 'bright-magenta' },
@@ -398,7 +426,7 @@ const disposeRender = render(() =>
           Spacer({ grow: 1 }),
           Text({
             style: { dim: true },
-            children: () => `ZEN · ${focusZone().toUpperCase()} · B${buffers()} W${windows()} T${tabs()} `,
+            children: () => `${zenMode() ? 'ZEN' : 'WORKSPACE'} · ${focusZone().toUpperCase()} `,
           }),
         ],
       }),
@@ -407,11 +435,14 @@ const disposeRender = render(() =>
           grow: 1,
           minHeight: 1,
           gap: 1,
-          paddingX: 1,
           justify: 'center',
           background: '#080b10',
         },
-        children: [projectPanel, editorPanel, contextPanel],
+        children: [
+          () => (treeOpen() ? projectTreePanel : null),
+          editorPanel,
+          () => (!zenMode() && terminalWidth() >= 105 ? contextPanel : null),
+        ],
       }),
       () =>
         commandOpen()
@@ -426,24 +457,28 @@ const disposeRender = render(() =>
             })
           : null,
       Row({
-        style: { height: 1, background: '#161b22' },
+        style: { height: 1, background: '#17172b' },
         children: [
           Text({
             style: { bold: true, reverse: true },
             children: () => ` ${mode()} `,
           }),
           Text({
+            style: { foreground: 'bright-cyan' },
+            children: () => ` ${projectLabel()} `,
+          }),
+          Text({
             style: { foreground: 'bright-yellow' },
-            children: () => (modified() ? ' [+]' : ''),
+            children: () => (modified() ? '[+] ' : ''),
           }),
           Text({
             style: { dim: true },
-            children: () => (status() ? ` ${status()}` : ''),
+            children: () => (status() ? `${status()} ` : ''),
           }),
           Spacer({ grow: 1 }),
           Text({
             style: { dim: true },
-            children: () => `${terminalWidth()}×${terminalHeight()} · Tab workspace · `,
+            children: () => `B${buffers()} W${windows()} T${tabs()} `,
           }),
           Text({ children: () => `Ln ${line()}, Col ${column()} ` }),
         ],
@@ -455,9 +490,14 @@ const disposeRender = render(() =>
 flush();
 
 globals.__zimUiDispose = () => {
-  projectRef = undefined;
+  treeRef = undefined;
   editorRef = undefined;
   contextRef = undefined;
+  globals.__zimToggleTree = undefined;
+  globals.__zimToggleZen = undefined;
+  globals.__zimFocusEditor = undefined;
+  globals.__zimFocusTree = undefined;
+  globals.__zimCloseTree = undefined;
   disposeRender();
   restoreHost();
 };

@@ -3,6 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const is_linux = target.result.os.tag == .linux;
 
     const pty_test_filter = b.option(
         []const u8,
@@ -15,6 +16,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = target.result.os.tag != .windows,
     });
+    if (is_linux) pty_test_module.addCMacro("_FORTIFY_SOURCE", "0");
     const pty_tests = b.addTest(.{
         .root_module = pty_test_module,
         .filters = if (pty_test_filter) |filter| &.{filter} else &.{},
@@ -43,13 +45,23 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    if (is_linux) terminal_module.addCMacro("_FORTIFY_SOURCE", "0");
 
+    // Zig 0.16 ReleaseSafe rejects translated Windows CRT helpers emitted by
+    // ZLua's C-import layer as unused locals. Keep Zim itself ReleaseSafe while
+    // compiling only this third-party C-heavy dependency as ReleaseFast on
+    // Windows. Native Zim editor/application modules retain ReleaseSafe checks.
+    const zlua_optimize: std.builtin.OptimizeMode = if (target.result.os.tag == .windows and optimize == .ReleaseSafe)
+        .ReleaseFast
+    else
+        optimize;
     const zlua_dep = b.dependency("zlua", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = zlua_optimize,
         .lang = .lua54,
     });
     const zlua = zlua_dep.module("zlua");
+    zlua.optimize = zlua_optimize;
 
     const tree_sitter_dep = b.dependency("tree_sitter", .{
         .target = target,
@@ -82,6 +94,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    if (is_linux) core_test_module.addCMacro("_FORTIFY_SOURCE", "0");
     core_test_module.addImport("language", language_module);
     core_test_module.addImport("zlua", zlua);
     const core_tests = b.addTest(.{
@@ -129,9 +142,20 @@ pub fn build(b: *std.Build) void {
         return;
     }
 
+    // Hondo currently crosses C translation/runtime paths that Zig 0.16 does
+    // not handle reliably under ReleaseSafe: Bellard QuickJS trips UB
+    // instrumentation on macOS/arm64, and glibc's fortified poll wrapper does
+    // not translate cleanly on Linux. Keep Zim's editor/application code
+    // ReleaseSafe while building the embedded Hondo runtime as ReleaseFast.
+    // The exact resulting executable is exercised by interactive, integration,
+    // RPC, packaging, performance, and full-suite CI gates.
+    const hondo_optimize: std.builtin.OptimizeMode = if (optimize == .ReleaseSafe)
+        .ReleaseFast
+    else
+        optimize;
     const hondo_dep = b.lazyDependency("hondo", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = hondo_optimize,
     }) orelse return;
     const hondo = hondo_dep.module("hondo");
 
@@ -151,6 +175,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "terminal", .module = terminal_module },
         },
     });
+    if (is_linux) app_module.addCMacro("_FORTIFY_SOURCE", "0");
     const exe = b.addExecutable(.{
         .name = "zim",
         .root_module = app_module,
@@ -164,19 +189,21 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run Zim");
     run_step.dependOn(&run_cmd.step);
 
+    const integration_module = b.createModule(.{
+        .root_source_file = b.path("src/integration_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "hondo", .module = hondo },
+            .{ .name = "language", .module = language_module },
+            .{ .name = "zlua", .module = zlua },
+            .{ .name = "terminal", .module = terminal_module },
+        },
+    });
+    if (is_linux) integration_module.addCMacro("_FORTIFY_SOURCE", "0");
     const integration_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/integration_tests.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-            .imports = &.{
-                .{ .name = "hondo", .module = hondo },
-                .{ .name = "language", .module = language_module },
-                .{ .name = "zlua", .module = zlua },
-                .{ .name = "terminal", .module = terminal_module },
-            },
-        }),
+        .root_module = integration_module,
     });
     integration_tests.step.dependOn(&build_ui.step);
     const run_integration_tests = b.addRunArtifact(integration_tests);

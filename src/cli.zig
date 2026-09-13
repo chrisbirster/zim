@@ -4,6 +4,7 @@ pub const Command = union(enum) {
     run: RunOptions,
     help,
     version,
+    check,
 };
 
 pub const RunOptions = struct {
@@ -27,6 +28,7 @@ pub fn parse(args: []const []const u8) ParseError!Command {
         const arg = args[index];
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) return .help;
         if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) return .version;
+        if (std.mem.eql(u8, arg, "--check")) return .check;
 
         if (std.mem.eql(u8, arg, "--headless")) {
             options.headless = true;
@@ -118,7 +120,7 @@ test "parse RPC endpoints" {
     }
 }
 
-test "parse help and version" {
+test "parse help version and diagnostics" {
     switch (try parse(&.{"--help"})) {
         .help => {},
         else => return error.TestUnexpectedResult,
@@ -133,6 +135,10 @@ test "parse help and version" {
     }
     switch (try parse(&.{"-v"})) {
         .version => {},
+        else => return error.TestUnexpectedResult,
+    }
+    switch (try parse(&.{"--check"})) {
+        .check => {},
         else => return error.TestUnexpectedResult,
     }
 }

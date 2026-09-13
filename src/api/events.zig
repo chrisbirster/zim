@@ -131,7 +131,9 @@ pub const Registry = struct {
                 .autocmd_id = entry.id,
                 .user_data = entry.user_data,
             };
-            try entry.callback(&context);
+            entry.callback(&context) catch |err| {
+                reportCallbackError(editor, event.kind, entry.id, err);
+            };
             if (entry.once) _ = self.delete(entry.id);
         }
     }
@@ -144,6 +146,18 @@ pub const Registry = struct {
         self.entries.items.len -= 1;
     }
 };
+
+fn reportCallbackError(editor: *editor_module.Editor, kind: Kind, id: AutocmdId, err: anyerror) void {
+    const rendered = std.fmt.bufPrint(
+        &editor.status_buffer,
+        "autocmd {s} #{d} failed: {s}",
+        .{ @tagName(kind), id, @errorName(err) },
+    ) catch {
+        editor.status_len = 0;
+        return;
+    };
+    editor.status_len = rendered.len;
+}
 
 fn matches(entry: Entry, event: Event) bool {
     if (entry.kind != event.kind) return false;
@@ -186,6 +200,11 @@ fn onceCallback(context: *Context) !void {
     appendValue(state, 9);
 }
 
+fn failingCallback(context: *Context) !void {
+    _ = context;
+    return error.IntentionalAutocmdFailure;
+}
+
 test "autocommands dispatch in registration order with snapshot mutation semantics" {
     var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
     defer editor.deinit();
@@ -217,4 +236,18 @@ test "autocommands support buffer filters and once callbacks" {
     try registry.emit(&editor, .{ .kind = .buffer_enter, .buffer_id = current });
     try registry.emit(&editor, .{ .kind = .buffer_enter, .buffer_id = current });
     try std.testing.expectEqualSlices(u8, &.{9}, state.values[0..state.len]);
+}
+
+test "autocommand callback failures are isolated and later callbacks still run" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    var registry = Registry.init(std.testing.allocator);
+    defer registry.deinit();
+    var state = OrderState{};
+
+    _ = try registry.create(.text_changed, .{}, failingCallback, null);
+    _ = try registry.create(.text_changed, .{}, secondCallback, &state);
+    try registry.emit(&editor, .{ .kind = .text_changed, .buffer_id = editor.currentBuffer().id });
+    try std.testing.expectEqualSlices(u8, &.{2}, state.values[0..state.len]);
+    try std.testing.expect(std.mem.indexOf(u8, editor.status(), "IntentionalAutocmdFailure") != null);
 }

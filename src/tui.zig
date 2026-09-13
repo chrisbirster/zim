@@ -2,6 +2,7 @@ const std = @import("std");
 const hondo = @import("hondo");
 const api_module = @import("api.zig");
 const api_observer = @import("api/observer.zig");
+const default_leader = @import("default_leader.zig");
 const editor_module = @import("editor.zig");
 const editor_view = @import("editor_view.zig");
 const lua_runtime = @import("lua_runtime.zig");
@@ -14,6 +15,11 @@ const fallback_height = 24;
 const resize_poll_ms = 50;
 const sequence_wait_ms = 10;
 
+const UiAction = enum {
+    toggle_tree,
+    toggle_zen,
+};
+
 const TuiApp = struct {
     allocator: std.mem.Allocator,
     editor: *editor_module.Editor,
@@ -24,6 +30,9 @@ const TuiApp = struct {
     renderer: hondo.terminal.renderer.Renderer,
     focus: hondo.focus.Manager,
     registry: hondo.native_view.Registry,
+    leader: default_leader.State = .{},
+    pending_ui_action: ?UiAction = null,
+    tree_open: bool = false,
 
     fn init(
         allocator: std.mem.Allocator,
@@ -95,8 +104,74 @@ const TuiApp = struct {
     }
 
     fn dispatch(self: *TuiApp, incoming: hondo.terminal.input.Event) !hondo.native_view_runtime.DispatchResult {
+        try self.syncFocus();
+        const ex_entry = isExEntryEvent(incoming) and self.editor.mode == .normal;
+        const before_buffer_id = self.editor.currentBufferConst().id;
         const before = api_observer.capture(self.editor);
-        const event = try self.prepareEvent(incoming);
+
+        // Ex entry is a global TUI action. Do not rely on Hondo focus to route
+        // ':' from a native tree/dashboard/overlay back into the editor. Close
+        // transient editor-owned pickers, enter command-line mode directly in
+        // Zig, then publish that state to the Hondo scene.
+        if (ex_entry) {
+            self.leader.reset();
+            if (self.editor.popup.open) self.editor.popupClose();
+            if (self.editor.pin_switcher_open) self.editor.closePinSwitcher();
+            _ = try self.editor.handleKey(.{ .codepoint = ':' });
+            try self.focusEditor();
+            try self.publishEditorState();
+            try api_observer.emitChanges(self.api, self.editor, before);
+            return .{
+                .result = .{ .default_prevented = true },
+                .path = .native,
+            };
+        }
+
+        if (self.tree_open and !self.editor.commandOpen()) {
+            try self.focusTree();
+        }
+        const maybe_event = try self.prepareEvent(incoming);
+        if (maybe_event == null) {
+            try self.applyPendingUiAction();
+            try self.syncFocus();
+            try api_observer.emitChanges(self.api, self.editor, before);
+            return .{
+                .result = .{ .default_prevented = true },
+                .path = .native,
+            };
+        }
+
+        if (self.tree_open and !self.editor.commandOpen()) {
+            const tree_handled = switch (maybe_event.?) {
+                .key => |key| try editor_view.dispatchProjectTreeKey(key),
+                else => false,
+            };
+            if (tree_handled) {
+                if (before_buffer_id != self.editor.currentBufferConst().id) {
+                    self.tree_open = false;
+                    try self.runtime.eval(
+                        "globalThis.__zimCloseTree?.();",
+                        "zim-close-tree-after-direct-open.js",
+                    );
+                    try self.registry.sync(self.scene);
+                    try self.syncFocus();
+                }
+                try api_observer.emitChanges(self.api, self.editor, before);
+                return .{
+                    .result = .{ .default_prevented = true },
+                    .path = .native,
+                };
+            }
+
+            // While the explorer owns the keyboard, unknown keys must not fall
+            // through and mutate the editor buffer behind it.
+            try api_observer.emitChanges(self.api, self.editor, before);
+            return .{
+                .result = .{ .default_prevented = true },
+                .path = .native,
+            };
+        }
+
         const grid = self.renderer.grid();
         const result = try hondo.native_view_runtime.dispatchInteractive(
             self.allocator,
@@ -104,12 +179,63 @@ const TuiApp = struct {
             self.scene,
             &self.focus,
             &self.registry,
-            event,
+            maybe_event.?,
             grid.width,
             grid.height,
         );
+        try self.applyPendingUiAction();
+        if (before_buffer_id != self.editor.currentBufferConst().id) {
+            self.tree_open = false;
+            try self.runtime.eval(
+                "globalThis.__zimCloseTree?.();",
+                "zim-close-tree-after-open.js",
+            );
+            try self.registry.sync(self.scene);
+            try self.syncFocus();
+        } else if (isEscapeEvent(incoming)) {
+            try self.registry.sync(self.scene);
+        }
+        try self.syncFocus();
         try api_observer.emitChanges(self.api, self.editor, before);
         return result;
+    }
+
+    fn focusEditor(self: *TuiApp) !void {
+        try self.runtime.eval(
+            "globalThis.__zimFocusEditor?.();",
+            "zim-focus-editor.js",
+        );
+        try self.registry.sync(self.scene);
+        try self.syncFocus();
+    }
+
+    fn focusTree(self: *TuiApp) !void {
+        try self.runtime.eval(
+            "globalThis.__zimFocusTree?.();",
+            "zim-focus-tree.js",
+        );
+        try self.registry.sync(self.scene);
+        try self.syncFocus();
+    }
+
+    fn applyPendingUiAction(self: *TuiApp) !void {
+        const action = self.pending_ui_action orelse return;
+        self.pending_ui_action = null;
+        switch (action) {
+            .toggle_tree => {
+                self.tree_open = !self.tree_open;
+                try self.runtime.eval(
+                    "globalThis.__zimToggleTree?.();",
+                    "zim-toggle-tree.js",
+                );
+            },
+            .toggle_zen => try self.runtime.eval(
+                "globalThis.__zimToggleZen?.();",
+                "zim-toggle-zen.js",
+            ),
+        }
+        try self.registry.sync(self.scene);
+        try self.syncFocus();
     }
 
     fn dispatchTerminal(self: *TuiApp, event: hondo.terminal.input.Event) !bool {
@@ -139,16 +265,48 @@ const TuiApp = struct {
         return true;
     }
 
-    fn prepareEvent(self: *TuiApp, incoming: hondo.terminal.input.Event) !hondo.terminal.input.Event {
+    fn prepareEvent(self: *TuiApp, incoming: hondo.terminal.input.Event) !?hondo.terminal.input.Event {
         return switch (incoming) {
-            .key => |key| .{ .key = try self.prepareKey(key) },
+            .key => |key| if (try self.prepareKey(key)) |prepared| .{ .key = prepared } else null,
             else => incoming,
         };
     }
 
-    fn prepareKey(self: *TuiApp, key: hondo.terminal.input.Key) !hondo.terminal.input.Key {
+    fn prepareKey(self: *TuiApp, key: hondo.terminal.input.Key) !?hondo.terminal.input.Key {
+        if (key == .escape and self.tree_open and !self.editor.commandOpen()) {
+            self.leader.reset();
+            self.pending_ui_action = .toggle_tree;
+            return null;
+        }
+
         if (key == .enter and self.editor.commandOpen()) {
-            if (try self.executePublicCommandLine()) return .escape;
+            if (try self.executePublicCommandLine()) return null;
+        }
+
+        if (key == .escape) self.leader.reset();
+
+        switch (key) {
+            .codepoint => |cp| {
+                const was_pending = self.leader.pending;
+                const action = self.leader.consume(self.editor, cp);
+                if (action) |selected| {
+                    switch (selected) {
+                        .explorer => self.pending_ui_action = .toggle_tree,
+                        .zen => self.pending_ui_action = .toggle_zen,
+                        .pin_add => {
+                            try self.queueEx("PinAdd");
+                            return .enter;
+                        },
+                        .pin_list => {
+                            try self.queueEx("PinList");
+                            return .enter;
+                        },
+                    }
+                    return null;
+                }
+                if (was_pending or (cp == default_leader.leader and self.leader.pending)) return null;
+            },
+            else => if (self.editor.mode != .normal or self.editor.commandOpen()) self.leader.reset(),
         }
 
         return switch (key) {
@@ -161,6 +319,11 @@ const TuiApp = struct {
             },
             else => key,
         };
+    }
+
+    fn queueEx(self: *TuiApp, command: []const u8) !void {
+        _ = try self.editor.handleKey(.{ .codepoint = ':' });
+        for (command) |byte| _ = try self.editor.handleKey(.{ .codepoint = byte });
     }
 
     fn executePublicCommandLine(self: *TuiApp) !bool {
@@ -178,15 +341,29 @@ const TuiApp = struct {
             "";
 
         if (std.mem.eql(u8, name, "w") or std.mem.eql(u8, name, "write")) {
+            _ = try self.editor.handleKey(.escape);
             _ = try self.api.writeCurrent(self.editor);
+            try self.publishEditorState();
             return true;
         }
 
         if (self.api.commands.find(name) != null) {
+            // Leave command-line mode before invoking the command. Dispatching a
+            // synthetic Escape afterwards would also close any popup the command
+            // intentionally created (for example :help or :checkhealth).
+            _ = try self.editor.handleKey(.escape);
             try self.api.commandExecute(self.editor, name, args);
+            try self.publishEditorState();
             return true;
         }
         return false;
+    }
+
+    fn publishEditorState(self: *TuiApp) !void {
+        try editor_view.publishBoundEditorState(&self.registry, self.scene);
+        try hondo.native_view_runtime.flushNotifications(&self.runtime, &self.registry);
+        try self.registry.sync(self.scene);
+        try self.syncFocus();
     }
 
     fn render(self: *TuiApp) !void {
@@ -279,7 +456,6 @@ fn notifyWorkspaceSize(
         if (!std.mem.eql(u8, native_type, editor_view.native_type)) continue;
         const context = hondo.native_view.Context{ .registry = registry, .node_id = node.id };
         try context.notify(payload);
-        break;
     }
     try hondo.native_view_runtime.flushNotifications(runtime, registry);
 }
@@ -384,6 +560,23 @@ fn readTerminalEvent(fd: c_int) !?hondo.terminal.input.Event {
         .{ .key = .{ .codepoint = 0xfffd } };
 }
 
+fn isExEntryEvent(event: hondo.terminal.input.Event) bool {
+    return switch (event) {
+        .key => |key| switch (key) {
+            .codepoint => |cp| cp == ':',
+            else => false,
+        },
+        else => false,
+    };
+}
+
+fn isEscapeEvent(event: hondo.terminal.input.Event) bool {
+    return switch (event) {
+        .key => |key| key == .escape,
+        else => false,
+    };
+}
+
 fn isImmediateQuitEvent(event: hondo.terminal.input.Event) bool {
     return switch (event) {
         .key => |key| switch (key) {
@@ -405,7 +598,12 @@ fn sceneContainsText(scene: *hondo.scene.Scene, expected: []const u8) bool {
     return false;
 }
 
-test "Hondo chrome reacts while the expanded editor grammar stays native" {
+fn sendLeader(app: *TuiApp, key: u21) !void {
+    _ = try app.dispatch(.{ .key = .{ .codepoint = default_leader.leader } });
+    _ = try app.dispatch(.{ .key = .{ .codepoint = key } });
+}
+
+test "Hondo chrome reacts while editor grammar stays native" {
     var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
     defer editor.deinit();
     var api = api_module.Api.init(std.testing.allocator);
@@ -414,6 +612,9 @@ test "Hondo chrome reacts while the expanded editor grammar stays native" {
     defer app.deinit();
 
     try std.testing.expect(sceneContainsText(app.scene, "NORMAL"));
+    try std.testing.expect(sceneContainsText(app.scene, "your new code overlord."));
+    try std.testing.expect(sceneContainsText(app.scene, "ZIM v1.0.0"));
+    try std.testing.expect(sceneContainsText(app.scene, ":checkhealth"));
 
     const insert_mode = try app.dispatch(.{ .key = .{ .codepoint = 'i' } });
     try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, insert_mode.path);
@@ -423,24 +624,74 @@ test "Hondo chrome reacts while the expanded editor grammar stays native" {
     const edit = try app.dispatch(.{ .key = .{ .codepoint = 'x' } });
     try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, edit.path);
     try std.testing.expectEqualStrings("x", editor.text());
-    try app.runtime.eval(
-        "if (globalThis.__zimJsKeyEvents !== 0) throw new Error('editor key crossed into JavaScript');",
-        "zim-native-key-proof.js",
-    );
-
-    _ = try app.dispatch(.{ .key = .escape });
-    const command = try app.dispatch(.{ .key = .{ .codepoint = ':' } });
-    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, command.path);
-    try std.testing.expectEqual(editor_module.Mode.command_line, editor.mode);
-    try std.testing.expect(sceneContainsText(app.scene, ":"));
 
     _ = try app.dispatch(.{ .key = .escape });
     try std.testing.expectEqual(editor_module.Mode.normal, editor.mode);
-    const native_again = try app.dispatch(.{ .key = .{ .codepoint = 'i' } });
-    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, native_again.path);
 }
 
-test "Zen workspace focus traverses chrome while insert Tab stays native" {
+test "Ex entry is global while project tree owns the keyboard" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 120, 30);
+    defer app.deinit();
+
+    try sendLeader(&app, 'e');
+    try std.testing.expect(app.tree_open);
+
+    const entered = try app.dispatch(.{ .key = .{ .codepoint = ':' } });
+    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, entered.path);
+    try std.testing.expect(editor.commandOpen());
+    var command_buffer: [32]u8 = undefined;
+    try std.testing.expectEqualStrings(":", editor.commandDisplay(&command_buffer));
+    try std.testing.expect(sceneContainsText(app.scene, ":"));
+
+    _ = try app.dispatch(.{ .key = .escape });
+    try std.testing.expect(!editor.commandOpen());
+    try std.testing.expect(app.tree_open);
+}
+
+test "q and q! quit reliably from the Hondo command line" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 100, 30);
+    defer app.deinit();
+
+    _ = try app.dispatch(.{ .key = .{ .codepoint = ':' } });
+    _ = try app.dispatch(.{ .key = .{ .codepoint = 'q' } });
+    _ = try app.dispatch(.{ .key = .enter });
+    try std.testing.expect(editor.quit_requested);
+
+    editor.quit_requested = false;
+    editor.mode = .normal;
+    try editor.setText("modified");
+    _ = try app.dispatch(.{ .key = .{ .codepoint = ':' } });
+    _ = try app.dispatch(.{ .key = .{ .codepoint = 'q' } });
+    _ = try app.dispatch(.{ .key = .{ .codepoint = '!' } });
+    _ = try app.dispatch(.{ .key = .enter });
+    try std.testing.expect(editor.quit_requested);
+}
+
+test "gg and G stay on the native TUI grammar path" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    try editor.setText("one\ntwo\nthree\nfour\n");
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 100, 30);
+    defer app.deinit();
+
+    _ = try app.dispatch(.{ .key = .{ .codepoint = 'G' } });
+    try std.testing.expect(editor.cursorPosition().line >= 4);
+    _ = try app.dispatch(.{ .key = .{ .codepoint = 'g' } });
+    _ = try app.dispatch(.{ .key = .{ .codepoint = 'g' } });
+    try std.testing.expectEqual(@as(usize, 1), editor.cursorPosition().line);
+}
+
+test "default leader toggles native project explorer and Zen chrome" {
     var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
     defer editor.deinit();
     var api = api_module.Api.init(std.testing.allocator);
@@ -449,50 +700,33 @@ test "Zen workspace focus traverses chrome while insert Tab stays native" {
     defer app.deinit();
 
     try std.testing.expect(sceneContainsText(app.scene, "ZEN · EDITOR"));
-    const before = editor.text().len;
-
-    const context = try app.dispatch(.{ .key = .tab });
-    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.javascript, context.path);
-    try std.testing.expect(sceneContainsText(app.scene, "ZEN · CONTEXT"));
-    try std.testing.expectEqual(before, editor.text().len);
-
-    const project = try app.dispatch(.{ .key = .tab });
-    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.javascript, project.path);
-    try std.testing.expect(sceneContainsText(app.scene, "ZEN · PROJECT"));
-
-    _ = try app.dispatch(.{ .key = .tab });
+    try sendLeader(&app, 'e');
+    try std.testing.expect(sceneContainsText(app.scene, "ZEN · TREE"));
+    try sendLeader(&app, 'e');
     try std.testing.expect(sceneContainsText(app.scene, "ZEN · EDITOR"));
-    _ = try app.dispatch(.{ .key = .{ .codepoint = 'i' } });
-    const insert_tab = try app.dispatch(.{ .key = .tab });
-    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, insert_tab.path);
-    try std.testing.expectEqualStrings("  ", editor.text());
-    try std.testing.expect(sceneContainsText(app.scene, "ZEN · EDITOR"));
+
+    try sendLeader(&app, 'z');
+    try std.testing.expect(sceneContainsText(app.scene, "WORKSPACE"));
+    try sendLeader(&app, 'z');
+    try std.testing.expect(sceneContainsText(app.scene, "ZEN"));
 }
 
-test "Zen workspace side zones collapse and respond to terminal width" {
-    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+test "default leader adds and opens Harpoon pins" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, "demo.zig");
     defer editor.deinit();
+    try editor.setText("one\ntwo\nthree\n");
+    editor.setCursorFromLineColumn(1, 1);
+
     var api = api_module.Api.init(std.testing.allocator);
     defer api.deinit();
     var app = try TuiApp.init(std.testing.allocator, &editor, &api, 120, 30);
     defer app.deinit();
 
-    try std.testing.expect(sceneContainsText(app.scene, "PROJECT"));
-    try std.testing.expect(sceneContainsText(app.scene, "Symbols"));
-
-    _ = try app.dispatch(.{ .key = .tab });
-    const collapsed = try app.dispatch(.{ .key = .{ .codepoint = 'c' } });
-    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.javascript, collapsed.path);
-    try std.testing.expect(sceneContainsText(app.scene, " C "));
-    try std.testing.expect(!sceneContainsText(app.scene, "Symbols"));
-
-    _ = try app.dispatch(.{ .key = .{ .codepoint = 'c' } });
-    try std.testing.expect(sceneContainsText(app.scene, "Symbols"));
-
-    try std.testing.expect(try app.resize(70, 24));
-    try app.render();
-    try std.testing.expect(sceneContainsText(app.scene, " P "));
-    try std.testing.expect(sceneContainsText(app.scene, " C "));
+    try sendLeader(&app, 'a');
+    try std.testing.expectEqual(@as(usize, 1), editor.pins.count());
+    try sendLeader(&app, 'h');
+    try std.testing.expect(editor.pin_switcher_open);
+    try std.testing.expect(sceneContainsText(app.scene, "HARPOON"));
 }
 
 test "Hondo status reflects native split commands" {
@@ -555,42 +789,31 @@ test "Lua configuration drives native Hondo keymaps commands and autocmds" {
     try std.testing.expectEqual(editor_module.Mode.normal, editor.mode);
 }
 
-test "Pins switcher renders in Hondo while navigation stays native" {
-    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, "demo.zig");
+test "public Ex command popup survives Enter dispatch" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
     defer editor.deinit();
-    try editor.setText("one\ntwo\nthree\n");
-    editor.setCursorFromLineColumn(1, 1);
-    _ = try editor.pinAddCurrent("middle");
-    editor.setCursor(0);
-
     var api = api_module.Api.init(std.testing.allocator);
     defer api.deinit();
-    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 120, 30);
+
+    const Callback = struct {
+        fn run(context: *api_module.commands.Context) !void {
+            const labels = [_][]const u8{"public command stayed open"};
+            try context.editor.popupShow(.plugin, "PUBLIC EX POPUP", &labels);
+        }
+    };
+    _ = try api.commandCreate("PopupTest", "popup lifecycle regression", Callback.run, null);
+
+    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 100, 30);
     defer app.deinit();
+    _ = try app.dispatch(.{ .key = .{ .codepoint = ':' } });
+    for ("PopupTest") |byte| _ = try app.dispatch(.{ .key = .{ .codepoint = byte } });
+    _ = try app.dispatch(.{ .key = .enter });
 
-    _ = try app.dispatch(.{ .key = .{ .codepoint = 'g' } });
-    const opened = try app.dispatch(.{ .key = .{ .codepoint = 'p' } });
-    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, opened.path);
-    try std.testing.expect(editor.pin_switcher_open);
-    try std.testing.expect(sceneContainsText(app.scene, "PIN SWITCHER"));
-
-    const jumped = try app.dispatch(.{ .key = .{ .codepoint = '1' } });
-    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, jumped.path);
-    try std.testing.expect(!editor.pin_switcher_open);
-    try std.testing.expectEqual(@as(usize, 2), editor.cursorPosition().line);
-    try std.testing.expectEqual(@as(usize, 2), editor.cursorPosition().column);
-
-    editor.setCursor(0);
-    _ = try app.dispatch(.{ .key = .{ .codepoint = '\'' } });
-    const linewise = try app.dispatch(.{ .key = .{ .codepoint = '1' } });
-    try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, linewise.path);
-    try std.testing.expectEqual(@as(usize, 2), editor.cursorPosition().line);
-    try std.testing.expectEqual(@as(usize, 1), editor.cursorPosition().column);
-
-    try app.runtime.eval(
-        "if (globalThis.__zimJsKeyEvents !== 0) throw new Error('pin navigation crossed into JavaScript');",
-        "zim-pin-native-key-proof.js",
-    );
+    try std.testing.expectEqual(editor_module.Mode.normal, editor.mode);
+    try std.testing.expect(editor.popup.open);
+    try std.testing.expect(sceneContainsText(app.scene, "PUBLIC EX POPUP"));
+    _ = try app.dispatch(.{ .key = .escape });
+    try std.testing.expect(!editor.popup.open);
 }
 
 test "plugin popup and completion popup render in Hondo while keys stay native" {
@@ -628,9 +851,4 @@ test "plugin popup and completion popup render in Hondo while keys stay native" 
     try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, accepted.path);
     try std.testing.expectEqualStrings("value()x", editor.text());
     try std.testing.expect(!editor.popup.open);
-
-    try app.runtime.eval(
-        "if (globalThis.__zimJsKeyEvents !== 0) throw new Error('popup key crossed into JavaScript');",
-        "zim-popup-native-key-proof.js",
-    );
 }

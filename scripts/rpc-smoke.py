@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Process-boundary smoke test for Zim v0.9 MessagePack-RPC.
+"""Process-boundary smoke test for Zim v1.0 MessagePack-RPC.
 
 Uses only the Python standard library so the same test runs on GitHub-hosted
 Linux, macOS, and Windows runners.
@@ -21,7 +21,7 @@ from typing import Any
 
 PROTOCOL_VERSION = 1
 API_VERSION = 1
-EXPECTED_ZIM_VERSION = "0.9.0"
+EXPECTED_ZIM_VERSION = "1.0.0"
 CALLBACK_ID = 777
 TIMEOUT_SECONDS = 20.0
 

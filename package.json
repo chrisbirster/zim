@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:ui": "node scripts/build-ui.mjs"
+    "build:ui": "node scripts/build-ui.mjs",
+    "test:ui": "vitest run ui/src/state.test.ts"
   },
   "dependencies": {
     "@solidjs/signals": "2.0.0-rc.4",
@@ -12,7 +13,8 @@
     "solid-js": "2.0.0-rc.4"
   },
   "devDependencies": {
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "vitest": "3.2.4"
   },
   "overrides": {
     "@solidjs/signals": "2.0.0-rc.4"

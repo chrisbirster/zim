@@ -1,0 +1,146 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release-gate:
+    name: validate-release-source
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require tag to point at current main HEAD
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          git fetch origin main
+          main_sha="$(git rev-parse origin/main)"
+          if [ "$GITHUB_SHA" != "$main_sha" ]; then
+            echo "release tag $GITHUB_REF_NAME points at $GITHUB_SHA, but origin/main is $main_sha" >&2
+            exit 1
+          fi
+
+      - name: Require successful exact-main CI
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          successful_runs="$(
+            gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+              -f head_sha="$GITHUB_SHA" \
+              -f status=completed \
+              -f per_page=20 \
+              --jq '[.workflow_runs[] | select(.event == "push" and .conclusion == "success")] | length'
+          )"
+          if [ "$successful_runs" -lt 1 ]; then
+            echo "no successful push CI run exists for exact release commit $GITHUB_SHA" >&2
+            exit 1
+          fi
+
+  package:
+    name: package-${{ matrix.os }}
+    needs: release-gate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+          use-cache: false
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install UI dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Bundle Solid/Hondo UI
+        run: npm run build:ui
+
+      - name: Build ReleaseSafe Zim
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Verify packaged binary
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            binary="./zig-out/bin/zim.exe"
+          else
+            binary="./zig-out/bin/zim"
+          fi
+
+          "$binary" --version
+          "$binary" --check
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            expected="zim ${GITHUB_REF_NAME#v}"
+            actual="$("$binary" --version | head -n 1)"
+            if [ "$actual" != "$expected" ]; then
+              echo "release tag/version mismatch: expected '$expected', got '$actual'" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Package archive
+        run: python scripts/package_release.py
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: zim-${{ runner.os }}-${{ runner.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: publish-release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download packaged archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: zim-*
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: |
+          cd release-artifacts
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "Zim $GITHUB_REF_NAME" --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" release-artifacts/* --repo "$GITHUB_REPOSITORY" --clobber
