@@ -103,10 +103,12 @@ const TuiApp = struct {
     }
 
     fn dispatch(self: *TuiApp, incoming: hondo.terminal.input.Event) !hondo.native_view_runtime.DispatchResult {
+        try self.syncFocus();
         const before = api_observer.capture(self.editor);
         const maybe_event = try self.prepareEvent(incoming);
         if (maybe_event == null) {
             try self.applyPendingUiAction();
+            try self.syncFocus();
             try api_observer.emitChanges(self.api, self.editor, before);
             return .{
                 .result = .{ .default_prevented = true },
@@ -126,6 +128,7 @@ const TuiApp = struct {
             grid.height,
         );
         try self.applyPendingUiAction();
+        try self.syncFocus();
         try api_observer.emitChanges(self.api, self.editor, before);
         return result;
     }
@@ -499,7 +502,7 @@ test "Hondo chrome reacts while editor grammar stays native" {
     try std.testing.expectEqual(editor_module.Mode.normal, editor.mode);
 }
 
-test "q quits reliably from the Hondo command line" {
+test "q and q! quit reliably from the Hondo command line" {
     var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
     defer editor.deinit();
     var api = api_module.Api.init(std.testing.allocator);
@@ -511,6 +514,30 @@ test "q quits reliably from the Hondo command line" {
     _ = try app.dispatch(.{ .key = .{ .codepoint = 'q' } });
     _ = try app.dispatch(.{ .key = .enter });
     try std.testing.expect(editor.quit_requested);
+
+    editor.quit_requested = false;
+    try editor.setText("modified");
+    _ = try app.dispatch(.{ .key = .{ .codepoint = ':' } });
+    _ = try app.dispatch(.{ .key = .{ .codepoint = 'q' } });
+    _ = try app.dispatch(.{ .key = .{ .codepoint = '!' } });
+    _ = try app.dispatch(.{ .key = .enter });
+    try std.testing.expect(editor.quit_requested);
+}
+
+test "gg and G stay on the native TUI grammar path" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    try editor.setText("one\ntwo\nthree\nfour\n");
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 100, 30);
+    defer app.deinit();
+
+    _ = try app.dispatch(.{ .key = .{ .codepoint = 'G' } });
+    try std.testing.expect(editor.cursorPosition().line >= 4);
+    _ = try app.dispatch(.{ .key = .{ .codepoint = 'g' } });
+    _ = try app.dispatch(.{ .key = .{ .codepoint = 'g' } });
+    try std.testing.expectEqual(@as(usize, 1), editor.cursorPosition().line);
 }
 
 test "default leader toggles native project explorer and Zen chrome" {
