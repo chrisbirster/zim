@@ -23,6 +23,9 @@ import time
 from pathlib import Path
 
 
+KEY_DELAY = 0.015
+
+
 def reap(pid: int) -> None:
     try:
         os.kill(pid, signal.SIGTERM)
@@ -88,13 +91,29 @@ def wait_for_exit(pid: int, timeout: float) -> int | None:
 
 
 def send(master: int, data: bytes, settle: float = 0.35) -> bytes:
-    os.write(master, data)
+    # Hosted macOS runners can render more slowly than they consume a single
+    # os.write() burst. Pace bytes like real typing so mode transitions and the
+    # Hondo/native-view handoff are observed in-order rather than merely queued.
+    for byte in data:
+        os.write(master, bytes((byte,)))
+        time.sleep(KEY_DELAY)
     return drain(master, settle)
 
 
-def write_and_expect(master: int, path: Path, expected: str, label: str) -> bool:
-    send(master, b":w\r", 0.5)
+def wait_for_text(master: int, path: Path, expected: str, timeout: float = 2.0) -> str:
+    deadline = time.monotonic() + timeout
     actual = path.read_text(encoding="utf-8")
+    while actual != expected and time.monotonic() < deadline:
+        # Keep consuming renderer output while the editor finishes processing
+        # queued input; otherwise a busy PTY can back-pressure the child.
+        drain(master, 0.05)
+        actual = path.read_text(encoding="utf-8")
+    return actual
+
+
+def write_and_expect(master: int, path: Path, expected: str, label: str) -> bool:
+    send(master, b":w\r", 0.25)
+    actual = wait_for_text(master, path, expected)
     if actual != expected:
         print(
             f"interactive-smoke: {label} wrote unexpected text\n"
@@ -212,14 +231,16 @@ def main() -> int:
             # Use an observable disk side effect instead of renderer bytes:
             # modify the buffer, reopen the tree, execute :w from tree focus,
             # and verify that the native editor command actually wrote the file.
-            send(master, b"ggciwTREEWRITE\x1b")
+            send(master, b"ggciw")
+            send(master, b"TREEWRITE")
+            send(master, b"\x1b")
             tree_write = "TREEWRITE beta gamma\n" + "".join(lines[1:])
             reopened_for_write = send(master, b" e")
             if b"FILES" not in reopened_for_write:
                 print("interactive-smoke: could not reopen tree for Ex write proof", file=sys.stderr)
                 return 1
-            send(master, b":w\r", 0.5)
-            if sample.read_text(encoding="utf-8") != tree_write:
+            send(master, b":w\r", 0.25)
+            if wait_for_text(master, sample, tree_write) != tree_write:
                 print("interactive-smoke: :w did not execute from tree focus", file=sys.stderr)
                 return 1
             send(master, b" e")
@@ -256,8 +277,12 @@ def main() -> int:
             if not undo_and_restore(master, sample, initial_text, "dd"):
                 return 1
 
-            # ciw must keep one undo group across operator -> insert mode.
-            send(master, b"ggciwOMEGA\x1b")
+            # ciw must keep one undo group across operator -> insert mode. Keep
+            # the mode transitions in separate PTY chunks so the test does not
+            # race a hosted runner's render loop.
+            send(master, b"ggciw")
+            send(master, b"OMEGA")
+            send(master, b"\x1b")
             changed_word = "OMEGA beta gamma\n" + "".join(lines[1:])
             if not write_and_expect(master, sample, changed_word, "ciw"):
                 return 1
@@ -296,14 +321,15 @@ def main() -> int:
             if not undo_and_restore(master, sample, initial_text, "Ctrl-O/Tab jump + dd"):
                 return 1
 
-            # Exercise command-line cancellation before the final quit. The
-            # process exit from :q! is the PTY-level behavior proof; do not depend
-            # on any particular cell-diff byte sequence for the command-line row.
-            send(master, b":noop\x7f\x1b")
+            # Exercise command-line cancellation before the final quit. Separate
+            # Escape and Enter from the surrounding command text so the PTY waits
+            # for each mode transition instead of flooding the editor event loop.
+            send(master, b":noop\x7f")
+            send(master, b"\x1b", 0.5)
             send(master, b":q!", 0.25)
-            os.write(master, b"\r")
+            send(master, b"\r", 0.25)
 
-            status = wait_for_exit(pid, 2.0)
+            status = wait_for_exit(pid, 3.0)
             if status is None:
                 print("interactive-smoke: :q! did not exit after project-tree handoff", file=sys.stderr)
                 return 1
@@ -316,7 +342,7 @@ def main() -> int:
                 return 1
 
             print(
-                "interactive-smoke: tree focus + counted motions + operator parity + visible Ex :q! passed"
+                "interactive-smoke: tree focus + counted motions + operator parity + native Ex :q! passed"
             )
             return 0
         finally:
