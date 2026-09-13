@@ -192,11 +192,12 @@ def main() -> int:
                 print("interactive-smoke: <leader>e did not close and reopen from tree focus", file=sys.stderr)
                 return 1
 
-            # Ex entry is global: ':' must steal command-line ownership even while
-            # the project tree is the active keyboard surface. Esc returns to tree.
-            tree_colon = send(master, b":")
-            if b":" not in tree_colon:
-                print("interactive-smoke: Ex mode was unreachable from tree focus", file=sys.stderr)
+            # Ex entry is global. Prove the behavior rather than requiring a
+            # literal ':' byte in one renderer diff: execute a real Ex command
+            # while the project tree owns the keyboard and require its popup.
+            tree_health = send(master, b":checkhealth\r", 0.5)
+            if b"Checkhealth" not in tree_health and b"Zim 1.0.0" not in tree_health:
+                print("interactive-smoke: Ex command did not execute from tree focus", file=sys.stderr)
                 return 1
             send(master, b"\x1b")
 
