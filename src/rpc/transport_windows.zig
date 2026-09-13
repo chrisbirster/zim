@@ -17,21 +17,21 @@ const error_pipe_listening: windows.DWORD = 536;
 
 extern "kernel32" fn GetStdHandle(nStdHandle: windows.DWORD) callconv(.winapi) ?windows.HANDLE;
 extern "kernel32" fn GetLastError() callconv(.winapi) windows.DWORD;
-extern "kernel32" fn CloseHandle(hObject: windows.HANDLE) callconv(.winapi) windows.BOOL;
+extern "kernel32" fn CloseHandle(hObject: windows.HANDLE) callconv(.winapi) c_int;
 extern "kernel32" fn ReadFile(
     hFile: windows.HANDLE,
     lpBuffer: [*]u8,
     nNumberOfBytesToRead: windows.DWORD,
     lpNumberOfBytesRead: ?*windows.DWORD,
     lpOverlapped: ?*anyopaque,
-) callconv(.winapi) windows.BOOL;
+) callconv(.winapi) c_int;
 extern "kernel32" fn WriteFile(
     hFile: windows.HANDLE,
     lpBuffer: [*]const u8,
     nNumberOfBytesToWrite: windows.DWORD,
     lpNumberOfBytesWritten: ?*windows.DWORD,
     lpOverlapped: ?*anyopaque,
-) callconv(.winapi) windows.BOOL;
+) callconv(.winapi) c_int;
 extern "kernel32" fn CreateNamedPipeW(
     lpName: [*:0]const u16,
     dwOpenMode: windows.DWORD,
@@ -45,9 +45,9 @@ extern "kernel32" fn CreateNamedPipeW(
 extern "kernel32" fn ConnectNamedPipe(
     hNamedPipe: windows.HANDLE,
     lpOverlapped: ?*anyopaque,
-) callconv(.winapi) windows.BOOL;
-extern "kernel32" fn FlushFileBuffers(hFile: windows.HANDLE) callconv(.winapi) windows.BOOL;
-extern "kernel32" fn DisconnectNamedPipe(hNamedPipe: windows.HANDLE) callconv(.winapi) windows.BOOL;
+) callconv(.winapi) c_int;
+extern "kernel32" fn FlushFileBuffers(hFile: windows.HANDLE) callconv(.winapi) c_int;
+extern "kernel32" fn DisconnectNamedPipe(hNamedPipe: windows.HANDLE) callconv(.winapi) c_int;
 extern "kernel32" fn Sleep(dwMilliseconds: windows.DWORD) callconv(.winapi) void;
 
 pub const local_kind = "windows-named-pipe";
