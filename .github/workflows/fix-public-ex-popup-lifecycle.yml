@@ -1,0 +1,38 @@
+name: Fix Public Ex Popup Lifecycle
+
+on:
+  push:
+    branches:
+      - feature/v1.0-daily-driver
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[public-ex-popup-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/v1.0-daily-driver
+          fetch-depth: 0
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: python scripts/fix_public_ex_popup_lifecycle.py
+      - run: zig fmt src build.zig
+      - run: npm install --no-audit --no-fund && npm run build:ui
+      - run: zig build test-core -Dheadless-only=true
+      - run: zig build test-integration -Doptimize=ReleaseSafe
+      - name: Commit fix and remove helper
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src
+          git rm scripts/fix_public_ex_popup_lifecycle.py .github/workflows/fix-public-ex-popup-lifecycle.yml
+          git commit -m "fix: preserve public Ex command popups [public-ex-popup-applied]"
+          git push origin HEAD:feature/v1.0-daily-driver
