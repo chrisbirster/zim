@@ -1,0 +1,29 @@
+name: Strengthen PTY Tree Contract
+
+on:
+  push:
+    branches:
+      - feature/v1.0-daily-driver
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[pty-tree-contract-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/v1.0-daily-driver
+          fetch-depth: 0
+      - run: python scripts/strengthen_pty_tree_contract.py
+      - run: python -m py_compile scripts/interactive_smoke.py
+      - name: Commit PTY assertions and remove helper
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/interactive_smoke.py
+          git rm scripts/strengthen_pty_tree_contract.py .github/workflows/strengthen-pty-tree-contract.yml
+          git commit -m "test: enforce tree-focus and dashboard PTY contract [pty-tree-contract-applied]"
+          git push origin HEAD:feature/v1.0-daily-driver
