@@ -181,15 +181,15 @@ def main() -> int:
                 print("interactive-smoke: <leader>e did not render the project tree", file=sys.stderr)
                 return 1
 
-            # Prove the leader binding is a true toggle from tree focus. On a
-            # no-file startup, closing the tree must reveal the dashboard again.
-            closed = send(master, b" e")
-            if b"ZIM v1.0.0" not in closed:
-                print("interactive-smoke: <leader>e did not close from tree focus", file=sys.stderr)
-                return 1
+            # Prove the leader binding is a true toggle from tree focus. Hondo's
+            # renderer emits cell diffs, so closing the tree does not have to
+            # re-emit the dashboard text as one contiguous byte string. Instead,
+            # close once and require the next toggle to render FILES again. If the
+            # first toggle did not close, the second would close and this fails.
+            send(master, b" e")
             reopened = send(master, b" e")
             if b"FILES" not in reopened:
-                print("interactive-smoke: <leader>e did not reopen the tree", file=sys.stderr)
+                print("interactive-smoke: <leader>e did not close and reopen from tree focus", file=sys.stderr)
                 return 1
 
             # Ex entry is global: ':' must steal command-line ownership even while
