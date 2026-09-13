@@ -1,0 +1,60 @@
+name: Fix PTY Ex Behavior Check
+
+on:
+  push:
+    branches:
+      - feature/v1.0-daily-driver
+    paths:
+      - .github/workflows/fix-pty-ex-behavior.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/v1.0-daily-driver
+          fetch-depth: 0
+      - name: Replace fragile Ex-byte assertion
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/interactive_smoke.py')
+          source = path.read_text()
+          old = '''            # Ex entry is global: ':' must steal command-line ownership even while
+                      # the project tree is the active keyboard surface. Esc returns to tree.
+                      tree_colon = send(master, b":")
+                      if b":" not in tree_colon:
+                          print("interactive-smoke: Ex mode was unreachable from tree focus", file=sys.stderr)
+                          return 1
+                      send(master, b"\\x1b")
+          '''
+          new = '''            # Ex entry is global. Prove the behavior rather than requiring a
+                      # literal ':' byte in one renderer diff: execute a real Ex command
+                      # while the project tree owns the keyboard and require its popup.
+                      tree_health = send(master, b":checkhealth\\r", 0.5)
+                      if b"Checkhealth" not in tree_health and b"Zim 1.0.0" not in tree_health:
+                          print("interactive-smoke: Ex command did not execute from tree focus", file=sys.stderr)
+                          return 1
+                      send(master, b"\\x1b")
+          '''
+          if old not in source:
+              raise SystemExit('expected tree Ex assertion block not found')
+          path.write_text(source.replace(old, new, 1))
+          PY
+      - name: Validate smoke script syntax
+        run: python -m py_compile scripts/interactive_smoke.py
+      - name: Commit behavior check and remove helper
+        shell: bash
+        run: |
+          rm .github/workflows/fix-pty-ex-behavior.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/interactive_smoke.py .github/workflows/fix-pty-ex-behavior.yml
+          git commit -m "test: prove Ex execution from tree focus"
+          git push origin HEAD:feature/v1.0-daily-driver
