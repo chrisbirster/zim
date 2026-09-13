@@ -33,7 +33,7 @@ npm run build:ui
 zig build test-integration -Doptimize=ReleaseSafe
 ```
 
-This layer covers native views, leader actions, Ex/public commands, popup state, Lua configuration, completion UI, and renderer/state synchronization. Ex entry is explicitly regression-tested while the project tree owns keyboard input: `:` is routed directly through the Zig editor grammar, its command-line state is published to Hondo, and Escape returns to the still-open tree.
+This layer covers native views, leader actions, Ex/public commands, popup state, Lua configuration, completion UI, and renderer/state synchronization. Ex entry is explicitly regression-tested while the project tree owns keyboard input: `:` is routed directly through the Zig editor grammar, its command-line state is published to Hondo, and Escape returns to the still-open tree. Once a command or search prompt is open, Enter is also submitted through the native Zig editor grammar so built-in commands such as `:q!` do not depend on Hondo focus routing.
 
 ### 4. Real PTY end-to-end test
 
