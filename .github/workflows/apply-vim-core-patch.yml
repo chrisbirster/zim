@@ -17,6 +17,9 @@ jobs:
         with:
           ref: feature/v1.0-daily-driver
           fetch-depth: 0
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
       - name: Apply Vim parity patch
         run: python scripts/apply_vim_core_patch.py
       - name: Format Zig
