@@ -45,7 +45,7 @@ zig build -Doptimize=ReleaseSafe
 python scripts/interactive_smoke.py ./zig-out/bin/zim
 ```
 
-The PTY test launches the real ReleaseSafe binary in a deterministic terminal and exercises the user-visible workflow that headless tests cannot prove: dashboard rendering, `<Space>e`, explorer toggle and collapse/expand, nested file opening, visible Ex mode from tree focus, `:checkhealth`, representative Vim motions/operators/counts, Ctrl jump routing, writes, and `:q!`. The tree-focus Ex gate executes `:checkhealth` and requires its popup, so it verifies behavior rather than depending on a particular byte sequence from Hondo's diff renderer.
+The PTY test launches the real ReleaseSafe binary in a deterministic terminal and exercises the user-visible workflow that headless tests cannot prove: dashboard rendering, `<Space>e`, explorer toggle and collapse/expand, nested file opening, Ex mode from tree focus, `:checkhealth`, representative Vim motions/operators/counts, Ctrl jump routing, writes, and `:q!`. For tree-focus Ex coverage, the test changes a real buffer, opens the explorer, runs `:w`, and confirms the edited file was written. This checks behavior without relying on the exact bytes produced by Hondo's diff renderer.
 
 ### 5. Release/platform smoke
 
