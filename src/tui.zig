@@ -281,6 +281,13 @@ const TuiApp = struct {
 
         if (key == .enter and self.editor.commandOpen()) {
             if (try self.executePublicCommandLine()) return null;
+
+            // Command-line submission is global editor grammar, just like Ex entry.
+            // Once Zim owns a command/search prompt, do not depend on the currently
+            // focused Hondo native view to route Enter back into the editor.
+            _ = try self.editor.handleKey(.enter);
+            try self.publishEditorState();
+            return null;
         }
 
         if (key == .escape) self.leader.reset();
@@ -649,6 +656,27 @@ test "Ex entry is global while project tree owns the keyboard" {
 
     _ = try app.dispatch(.{ .key = .escape });
     try std.testing.expect(!editor.commandOpen());
+    try std.testing.expect(app.tree_open);
+}
+
+test "command-line Enter stays native after project tree handoff" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 100, 30);
+    defer app.deinit();
+
+    try editor.setText("modified");
+    try sendLeader(&app, 'e');
+    try std.testing.expect(app.tree_open);
+
+    _ = try app.dispatch(.{ .key = .{ .codepoint = ':' } });
+    _ = try app.dispatch(.{ .key = .{ .codepoint = 'q' } });
+    _ = try app.dispatch(.{ .key = .{ .codepoint = '!' } });
+    _ = try app.dispatch(.{ .key = .enter });
+
+    try std.testing.expect(editor.quit_requested);
     try std.testing.expect(app.tree_open);
 }
 
