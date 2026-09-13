@@ -1083,6 +1083,10 @@ pub const Editor = struct {
                 break :blk true;
             },
             .backspace => self.repeatMotion(.left, self.takeCount()),
+            .tab => blk: {
+                _ = self.jumpListMove(1);
+                break :blk true;
+            },
             .left => self.repeatMotion(.left, self.takeCount()),
             .right => self.repeatMotion(.right, self.takeCount()),
             .up => self.repeatMotion(.up, self.takeCount()),
@@ -1238,6 +1242,7 @@ pub const Editor = struct {
             if (cp == ',') return self.changeListMove(1);
         }
 
+        const had_count = self.count_prefix != 0;
         const count = self.takeCount();
         return switch (cp) {
             'h' => self.repeatMotion(.left, count),
@@ -1286,7 +1291,7 @@ pub const Editor = struct {
                 break :blk true;
             },
             'G' => blk: {
-                if (count > 1) self.moveToLine(count - 1) else self.moveToLastLine();
+                if (had_count) self.moveToLine(count - 1) else self.moveToLastLine();
                 break :blk true;
             },
             'H' => blk: {
@@ -1594,6 +1599,13 @@ pub const Editor = struct {
             .codepoint => |cp| blk: {
                 if (self.pending_g) {
                     self.pending_g = false;
+                    if (cp == 'g') {
+                        const had_motion_count = self.count_prefix != 0 or self.operator_count != 1;
+                        const target_count = self.operator_count * self.takeCount();
+                        const target_line = if (had_motion_count) target_count - 1 else 0;
+                        try self.applyOperator(op, self.linewiseRangeToLine(target_line));
+                        break :blk true;
+                    }
                     if (cp == 'e' or cp == 'E') {
                         const motion_count = self.operator_count * self.takeCount();
                         const range = self.previousEndMotionRange(cp == 'E', motion_count);
@@ -1619,13 +1631,21 @@ pub const Editor = struct {
                     self.pending_g = true;
                     break :blk true;
                 }
+                if (cp == 'G') {
+                    const had_motion_count = self.count_prefix != 0 or self.operator_count != 1;
+                    const target_count = self.operator_count * self.takeCount();
+                    const target_line = if (had_motion_count) target_count - 1 else self.lastLineIndex();
+                    try self.applyOperator(op, self.linewiseRangeToLine(target_line));
+                    break :blk true;
+                }
                 const op_char: u21 = switch (op) {
                     .delete => 'd',
                     .change => 'c',
                     .yank => 'y',
                 };
                 if (cp == op_char) {
-                    const range = self.lineRange(self.cursor(), self.operator_count);
+                    const line_count = self.operator_count * self.takeCount();
+                    const range = self.lineRange(self.cursor(), line_count);
                     try self.applyOperator(op, range);
                     break :blk true;
                 }
@@ -1925,6 +1945,29 @@ pub const Editor = struct {
             if (end >= bytes.len) break;
         }
         return .{ .start = start, .end = end, .kind = .linewise };
+    }
+
+    fn lastLineIndex(self: *const Editor) usize {
+        const bytes = self.text();
+        if (bytes.len == 0) return 0;
+        var probe = bytes.len;
+        if (bytes[probe - 1] == '\n') probe -= 1;
+        return positionForOffset(bytes, lineStartAt(bytes, probe)).line - 1;
+    }
+
+    fn linewiseRangeToLine(self: *const Editor, target_line: usize) Range {
+        const bytes = self.text();
+        const current_line = positionForOffset(bytes, self.cursor()).line - 1;
+        const first_line = @min(current_line, target_line);
+        const last_line = @max(current_line, target_line);
+        const start = offsetForLineColumn(bytes, first_line, 0);
+        const last_start = offsetForLineColumn(bytes, last_line, 0);
+        const last_end = lineEnd(bytes, last_start);
+        return .{
+            .start = start,
+            .end = if (last_end < bytes.len) last_end + 1 else last_end,
+            .kind = .linewise,
+        };
     }
 
     fn motionRange(self: *Editor, cp: u21, count: usize) ?Range {
@@ -3518,6 +3561,50 @@ test "v1 uppercase edit shortcuts and WORD operators compose" {
     try std.testing.expectEqualStrings("bc\ndef\n", editor.text());
     _ = try editor.handleKey(.{ .codepoint = 'D' });
     try std.testing.expectEqualStrings("\ndef\n", editor.text());
+}
+
+test "v1 absolute G operators counts and Tab jump parity" {
+    var editor = try Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+
+    try editor.setText("one\ntwo\nthree\nfour\n");
+    _ = try editor.handleKey(.{ .codepoint = 'G' });
+    try std.testing.expectEqual(@as(usize, 4), editor.cursorPosition().line);
+    _ = try editor.handleKey(.{ .codepoint = '1' });
+    _ = try editor.handleKey(.{ .codepoint = 'G' });
+    try std.testing.expectEqual(@as(usize, 1), editor.cursorPosition().line);
+    _ = try editor.handleKey(.{ .codepoint = '3' });
+    _ = try editor.handleKey(.{ .codepoint = 'G' });
+    try std.testing.expectEqual(@as(usize, 3), editor.cursorPosition().line);
+
+    try editor.setText("one\ntwo\nthree\nfour\n");
+    editor.setCursorFromLineColumn(1, 0);
+    _ = try editor.handleKey(.{ .codepoint = 'd' });
+    _ = try editor.handleKey(.{ .codepoint = 'G' });
+    try std.testing.expectEqualStrings("one\n", editor.text());
+
+    try editor.setText("one\ntwo\nthree\nfour\n");
+    editor.setCursorFromLineColumn(2, 0);
+    _ = try editor.handleKey(.{ .codepoint = 'd' });
+    _ = try editor.handleKey(.{ .codepoint = 'g' });
+    _ = try editor.handleKey(.{ .codepoint = 'g' });
+    try std.testing.expectEqualStrings("four\n", editor.text());
+
+    try editor.setText("one\ntwo\nthree\nfour\n");
+    _ = try editor.handleKey(.{ .codepoint = 'd' });
+    _ = try editor.handleKey(.{ .codepoint = '2' });
+    _ = try editor.handleKey(.{ .codepoint = 'd' });
+    try std.testing.expectEqualStrings("three\nfour\n", editor.text());
+
+    try editor.setText("alpha beta alpha");
+    _ = try editor.handleKey(.{ .codepoint = '/' });
+    for ("beta") |byte| _ = try editor.handleKey(.{ .codepoint = byte });
+    _ = try editor.handleKey(.enter);
+    try std.testing.expectEqual(@as(usize, 6), editor.cursor());
+    _ = try editor.handleKey(.ctrl_o);
+    try std.testing.expectEqual(@as(usize, 0), editor.cursor());
+    _ = try editor.handleKey(.tab);
+    try std.testing.expectEqual(@as(usize, 6), editor.cursor());
 }
 
 test "named numbered yank small-delete and black-hole registers are distinct" {
