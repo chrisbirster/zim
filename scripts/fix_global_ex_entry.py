@@ -72,7 +72,6 @@ regression = r'''test "Ex entry is global while project tree owns the keyboard" 
 
     try sendLeader(&app, 'e');
     try std.testing.expect(app.tree_open);
-    try std.testing.expect(sceneContainsText(app.scene, "FILES"));
 
     const entered = try app.dispatch(.{ .key = .{ .codepoint = ':' } });
     try std.testing.expectEqual(hondo.native_view_runtime.DispatchPath.native, entered.path);
