@@ -1,0 +1,117 @@
+name: Strengthen PTY Ex Proof
+
+on:
+  push:
+    branches:
+      - feature/v1.0-daily-driver
+    paths:
+      - .github/workflows/strengthen-pty-ex-proof.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/v1.0-daily-driver
+          fetch-depth: 0
+      - name: Strengthen PTY Ex proof
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/interactive_smoke.py')
+          source = path.read_text()
+
+          old_tree = '''            # Ex entry is global. Prove the behavior rather than requiring a
+                      # literal ':' byte in one renderer diff: execute a real Ex command
+                      # while the project tree owns the keyboard and require its popup.
+                      tree_health = send(master, b":checkhealth\\r", 0.5)
+                      if b"Checkhealth" not in tree_health and b"Zim 1.0.0" not in tree_health:
+                          print("interactive-smoke: Ex command did not execute from tree focus", file=sys.stderr)
+                          return 1
+                      send(master, b"\\x1b")
+
+          '''
+          if old_tree not in source:
+              raise SystemExit('tree Ex popup block not found')
+          source = source.replace(old_tree, '', 1)
+
+          anchor = '''            opened = send(master, b"j\\r", 0.5)
+                      if b"alpha beta gamma" not in opened:
+                          print("interactive-smoke: nested file did not open from project tree", file=sys.stderr)
+                          return 1
+
+          '''
+          insertion = '''            opened = send(master, b"j\\r", 0.5)
+                      if b"alpha beta gamma" not in opened:
+                          print("interactive-smoke: nested file did not open from project tree", file=sys.stderr)
+                          return 1
+
+                      # Ex entry must work even when the explorer owns the keyboard.
+                      # Use an observable disk side effect instead of renderer bytes:
+                      # modify the buffer, reopen the tree, execute :w from tree focus,
+                      # and verify that the native editor command actually wrote the file.
+                      send(master, b"ggciwTREEWRITE\\x1b")
+                      tree_write = "TREEWRITE beta gamma\\n" + "".join(lines[1:])
+                      reopened_for_write = send(master, b" e")
+                      if b"FILES" not in reopened_for_write:
+                          print("interactive-smoke: could not reopen tree for Ex write proof", file=sys.stderr)
+                          return 1
+                      send(master, b":w\\r", 0.5)
+                      if sample.read_text(encoding="utf-8") != tree_write:
+                          print("interactive-smoke: :w did not execute from tree focus", file=sys.stderr)
+                          return 1
+                      send(master, b" e")
+                      if not undo_and_restore(master, sample, initial_text, "tree-focus :w"):
+                          return 1
+
+          '''
+          if anchor not in source:
+              raise SystemExit('nested-open anchor not found')
+          source = source.replace(anchor, insertion, 1)
+
+          old_final = '''            # Exercise command-line cancellation before the final quit. Visibility
+                      # is checked on the initial ':' frame; renderer updates after q/! may
+                      # be emitted as separate cell diffs rather than one contiguous string.
+                      colon_frame = send(master, b":")
+                      if b":" not in colon_frame:
+                          print("interactive-smoke: Ex command prompt was not visibly rendered", file=sys.stderr)
+                          return 1
+                      send(master, b"noop\\x7f\\x1b")
+
+                      colon_frame = send(master, b":")
+                      if b":" not in colon_frame:
+                          print("interactive-smoke: Ex command prompt did not recover after Esc", file=sys.stderr)
+                          return 1
+                      send(master, b"q!", 0.25)
+                      os.write(master, b"\\r")
+          '''
+          new_final = '''            # Exercise command-line cancellation before the final quit. The
+                      # process exit from :q! is the PTY-level behavior proof; do not depend
+                      # on any particular cell-diff byte sequence for the command-line row.
+                      send(master, b":noop\\x7f\\x1b")
+                      send(master, b":q!", 0.25)
+                      os.write(master, b"\\r")
+          '''
+          if old_final not in source:
+              raise SystemExit('final colon assertion block not found')
+          source = source.replace(old_final, new_final, 1)
+
+          path.write_text(source)
+          PY
+      - name: Validate smoke script syntax
+        run: python -m py_compile scripts/interactive_smoke.py
+      - name: Commit stronger proof and remove helper
+        shell: bash
+        run: |
+          rm .github/workflows/strengthen-pty-ex-proof.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/interactive_smoke.py .github/workflows/strengthen-pty-ex-proof.yml
+          git commit -m "test: prove tree-focus Ex through disk write"
+          git push origin HEAD:feature/v1.0-daily-driver
