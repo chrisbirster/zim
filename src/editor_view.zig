@@ -11,6 +11,7 @@ const scrolloff: usize = 8;
 const max_tree_entries: usize = 2048;
 
 var bound_editor: ?*editor_module.Editor = null;
+var bound_editor_state: ?*State = null;
 
 const ViewRole = enum {
     editor,
@@ -104,6 +105,8 @@ fn create(
     if (state.role == .project_tree) {
         bound_project_tree = state;
         try reloadProjectTree(state);
+    } else {
+        bound_editor_state = state;
     }
     return state;
 }
@@ -111,6 +114,7 @@ fn create(
 fn destroy(allocator: std.mem.Allocator, state_ptr: ?*anyopaque) void {
     const state: *State = @ptrCast(@alignCast(state_ptr orelse return));
     if (bound_project_tree == state) bound_project_tree = null;
+    if (bound_editor_state == state) bound_editor_state = null;
     clearProjectTree(state, allocator);
     state.tree_entries.deinit(allocator);
     clearExpandedPaths(state, allocator);
@@ -200,6 +204,21 @@ fn handleKey(
     const after = captureCoarseState(state.editor);
     if (shouldPublishKeyState(before, after)) try publishState(state, context);
     return .handled;
+}
+
+pub fn publishBoundEditorState(
+    registry: *hondo.native_view.Registry,
+    scene: *hondo.scene.Scene,
+) !void {
+    const state = bound_editor_state orelse return;
+    for (scene.nodes.items) |maybe_node| {
+        const node = maybe_node orelse continue;
+        if (node.id == 0 or !registry.isNative(node.id)) continue;
+        const native_name = (try hondo.native_view.nativeType(scene, node.id)) orelse continue;
+        if (!std.mem.eql(u8, native_name, native_type)) continue;
+        const context = hondo.native_view.Context{ .registry = registry, .node_id = node.id };
+        try publishState(state, context);
+    }
 }
 
 pub fn dispatchProjectTreeKey(key: hondo.terminal.input.Key) !bool {

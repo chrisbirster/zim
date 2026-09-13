@@ -263,7 +263,7 @@ const TuiApp = struct {
         }
 
         if (key == .enter and self.editor.commandOpen()) {
-            if (try self.executePublicCommandLine()) return .escape;
+            if (try self.executePublicCommandLine()) return null;
         }
 
         if (key == .escape) self.leader.reset();
@@ -324,15 +324,29 @@ const TuiApp = struct {
             "";
 
         if (std.mem.eql(u8, name, "w") or std.mem.eql(u8, name, "write")) {
+            _ = try self.editor.handleKey(.escape);
             _ = try self.api.writeCurrent(self.editor);
+            try self.publishEditorState();
             return true;
         }
 
         if (self.api.commands.find(name) != null) {
+            // Leave command-line mode before invoking the command. Dispatching a
+            // synthetic Escape afterwards would also close any popup the command
+            // intentionally created (for example :help or :checkhealth).
+            _ = try self.editor.handleKey(.escape);
             try self.api.commandExecute(self.editor, name, args);
+            try self.publishEditorState();
             return true;
         }
         return false;
+    }
+
+    fn publishEditorState(self: *TuiApp) !void {
+        try editor_view.publishBoundEditorState(&self.registry, self.scene);
+        try hondo.native_view_runtime.flushNotifications(&self.runtime, &self.registry);
+        try self.registry.sync(self.scene);
+        try self.syncFocus();
     }
 
     fn render(self: *TuiApp) !void {
@@ -733,6 +747,33 @@ test "Lua configuration drives native Hondo keymaps commands and autocmds" {
     _ = try app.dispatch(.{ .key = .enter });
     try std.testing.expectEqualStrings("configured", editor.text());
     try std.testing.expectEqual(editor_module.Mode.normal, editor.mode);
+}
+
+test "public Ex command popup survives Enter dispatch" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    var api = api_module.Api.init(std.testing.allocator);
+    defer api.deinit();
+
+    const Callback = struct {
+        fn run(context: *api_module.commands.Context) !void {
+            const labels = [_][]const u8{"public command stayed open"};
+            try context.editor.popupShow(.plugin, "PUBLIC EX POPUP", &labels);
+        }
+    };
+    _ = try api.commandCreate("PopupTest", "popup lifecycle regression", Callback.run, null);
+
+    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 100, 30);
+    defer app.deinit();
+    _ = try app.dispatch(.{ .key = .{ .codepoint = ':' } });
+    for ("PopupTest") |byte| _ = try app.dispatch(.{ .key = .{ .codepoint = byte } });
+    _ = try app.dispatch(.{ .key = .enter });
+
+    try std.testing.expectEqual(editor_module.Mode.normal, editor.mode);
+    try std.testing.expect(editor.popup.open);
+    try std.testing.expect(sceneContainsText(app.scene, "PUBLIC EX POPUP"));
+    _ = try app.dispatch(.{ .key = .escape });
+    try std.testing.expect(!editor.popup.open);
 }
 
 test "plugin popup and completion popup render in Hondo while keys stay native" {
