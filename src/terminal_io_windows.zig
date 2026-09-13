@@ -12,15 +12,15 @@ extern "kernel32" fn ReadFile(
     lpBuffer: [*]u8,
     nNumberOfBytesToRead: windows.DWORD,
     lpNumberOfBytesRead: ?*windows.DWORD,
-    lpOverlapped: ?*windows.OVERLAPPED,
-) callconv(.winapi) windows.BOOL;
+    lpOverlapped: ?*anyopaque,
+) callconv(.winapi) c_int;
 extern "kernel32" fn WriteFile(
     hFile: windows.HANDLE,
     lpBuffer: [*]const u8,
     nNumberOfBytesToWrite: windows.DWORD,
     lpNumberOfBytesWritten: ?*windows.DWORD,
-    lpOverlapped: ?*windows.OVERLAPPED,
-) callconv(.winapi) windows.BOOL;
+    lpOverlapped: ?*anyopaque,
+) callconv(.winapi) c_int;
 
 pub const IoError = error{ ReadFailed, WriteFailed };
 
