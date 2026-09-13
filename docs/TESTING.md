@@ -33,7 +33,7 @@ npm run build:ui
 zig build test-integration -Doptimize=ReleaseSafe
 ```
 
-This layer covers native views, leader actions, Ex/public commands, popup state, Lua configuration, completion UI, and renderer/state synchronization.
+This layer covers native views, leader actions, Ex/public commands, popup state, Lua configuration, completion UI, and renderer/state synchronization. Ex entry is explicitly regression-tested while the project tree owns keyboard input: `:` is routed directly through the Zig editor grammar, its command-line state is published to Hondo, and Escape returns to the still-open tree.
 
 ### 4. Real PTY end-to-end test
 
@@ -45,7 +45,7 @@ zig build -Doptimize=ReleaseSafe
 python scripts/interactive_smoke.py ./zig-out/bin/zim
 ```
 
-The PTY test launches the real ReleaseSafe binary in a deterministic terminal and exercises the user-visible workflow that headless tests cannot prove: dashboard rendering, `<Space>e`, explorer toggle and collapse/expand, nested file opening, visible Ex mode, `:checkhealth`, representative Vim motions/operators/counts, Ctrl jump routing, writes, and `:q!`.
+The PTY test launches the real ReleaseSafe binary in a deterministic terminal and exercises the user-visible workflow that headless tests cannot prove: dashboard rendering, `<Space>e`, explorer toggle and collapse/expand, nested file opening, visible Ex mode from tree focus, `:checkhealth`, representative Vim motions/operators/counts, Ctrl jump routing, writes, and `:q!`.
 
 ### 5. Release/platform smoke
 
