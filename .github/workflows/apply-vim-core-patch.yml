@@ -1,0 +1,31 @@
+name: Apply Vim Core Patch
+
+on:
+  push:
+    branches:
+      - feature/v1.0-daily-driver
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[vim-core-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/v1.0-daily-driver
+          fetch-depth: 0
+      - name: Apply Vim parity patch
+        run: python scripts/apply_vim_core_patch.py
+      - name: Format Zig
+        run: zig fmt src build.zig
+      - name: Commit source repair and remove helper
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src ui
+          git rm scripts/apply_vim_core_patch.py .github/workflows/apply-vim-core-patch.yml
+          git commit -m "feat: expand Vim motion and TUI parity [vim-core-applied]"
+          git push origin HEAD:feature/v1.0-daily-driver
