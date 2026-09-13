@@ -23,49 +23,54 @@ jobs:
 
           path = Path('src/tui.zig')
           text = path.read_text()
-          old = '''        if (key == .enter and self.editor.commandOpen()) {
-            if (try self.executePublicCommandLine()) return null;
-        }
-'''
-          new = '''        if (key == .enter and self.editor.commandOpen()) {
-            if (try self.executePublicCommandLine()) return null;
-
-            // Command-line submission is global editor grammar, just like Ex entry.
-            // Once Zim owns a command/search prompt, do not depend on the currently
-            // focused Hondo native view to route Enter back into the editor.
-            _ = try self.editor.handleKey(.enter);
-            try self.publishEditorState();
-            return null;
-        }
-'''
+          old = "\n".join([
+              "        if (key == .enter and self.editor.commandOpen()) {",
+              "            if (try self.executePublicCommandLine()) return null;",
+              "        }",
+              "",
+          ])
+          new = "\n".join([
+              "        if (key == .enter and self.editor.commandOpen()) {",
+              "            if (try self.executePublicCommandLine()) return null;",
+              "",
+              "            // Command-line submission is global editor grammar, just like Ex entry.",
+              "            // Once Zim owns a command/search prompt, do not depend on the currently",
+              "            // focused Hondo native view to route Enter back into the editor.",
+              "            _ = try self.editor.handleKey(.enter);",
+              "            try self.publishEditorState();",
+              "            return null;",
+              "        }",
+              "",
+          ])
           if text.count(old) != 1:
               raise SystemExit(f'expected one prepareKey command-submit block, found {text.count(old)}')
           text = text.replace(old, new)
 
-          marker = '''test "q and q! quit reliably from the Hondo command line" {
-'''
-          test = '''test "command-line Enter stays native after project tree handoff" {
-    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
-    defer editor.deinit();
-    var api = api_module.Api.init(std.testing.allocator);
-    defer api.deinit();
-    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 100, 30);
-    defer app.deinit();
-
-    try editor.setText("modified");
-    try sendLeader(&app, 'e');
-    try std.testing.expect(app.tree_open);
-
-    _ = try app.dispatch(.{ .key = .{ .codepoint = ':' } });
-    _ = try app.dispatch(.{ .key = .{ .codepoint = 'q' } });
-    _ = try app.dispatch(.{ .key = .{ .codepoint = '!' } });
-    _ = try app.dispatch(.{ .key = .enter });
-
-    try std.testing.expect(editor.quit_requested);
-    try std.testing.expect(app.tree_open);
-}
-
-'''
+          marker = 'test "q and q! quit reliably from the Hondo command line" {\n'
+          test = "\n".join([
+              'test "command-line Enter stays native after project tree handoff" {',
+              '    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);',
+              '    defer editor.deinit();',
+              '    var api = api_module.Api.init(std.testing.allocator);',
+              '    defer api.deinit();',
+              '    var app = try TuiApp.init(std.testing.allocator, &editor, &api, 100, 30);',
+              '    defer app.deinit();',
+              '',
+              '    try editor.setText("modified");',
+              "    try sendLeader(&app, 'e');",
+              '    try std.testing.expect(app.tree_open);',
+              '',
+              "    _ = try app.dispatch(.{ .key = .{ .codepoint = ':' } });",
+              "    _ = try app.dispatch(.{ .key = .{ .codepoint = 'q' } });",
+              "    _ = try app.dispatch(.{ .key = .{ .codepoint = '!' } });",
+              '    _ = try app.dispatch(.{ .key = .enter });',
+              '',
+              '    try std.testing.expect(editor.quit_requested);',
+              '    try std.testing.expect(app.tree_open);',
+              '}',
+              '',
+              '',
+          ])
           if text.count(marker) != 1:
               raise SystemExit(f'expected one q/q! test marker, found {text.count(marker)}')
           text = text.replace(marker, test + marker)
