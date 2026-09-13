@@ -10,12 +10,15 @@ terminal control-byte routing can diverge between Hondo native views.
 
 from __future__ import annotations
 
+import fcntl
 import os
 import pty
 import select
 import signal
+import struct
 import sys
 import tempfile
+import termios
 import time
 from pathlib import Path
 
@@ -134,6 +137,14 @@ def main() -> int:
 
         pid, master = pty.fork()
         if pid == 0:
+            # pty.fork() inherits an unspecified size on hosted runners. Give Zim
+            # the same useful geometry a real terminal would provide so centered
+            # dashboard/popup assertions test rendering rather than zero-size PTYs.
+            fcntl.ioctl(
+                sys.stdout.fileno(),
+                termios.TIOCSWINSZ,
+                struct.pack("HHHH", 30, 120, 0, 0),
+            )
             env = os.environ.copy()
             env.setdefault("TERM", "xterm-256color")
             os.chdir(project)
@@ -191,7 +202,6 @@ def main() -> int:
 
             # The only root entry is src/. Enter expands it; h collapses the same
             # node and l expands it again. j + Enter then opens the nested file.
-            # now-visible nested sample file and must transfer ownership to editor.
             expanded = send(master, b"\r")
             if b"sample.txt" not in expanded:
                 print("interactive-smoke: Enter did not expand a project-tree directory", file=sys.stderr)
