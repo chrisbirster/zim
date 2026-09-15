@@ -1,0 +1,50 @@
+name: Repair v1 human dogfood blockers
+
+on:
+  push:
+    branches:
+      - feature/v1.0-daily-driver
+    paths:
+      - scripts/repair_v1_human_dogfood.py
+      - .github/workflows/repair-v1-human-dogfood.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/v1.0-daily-driver
+          fetch-depth: 0
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply repair
+        run: python3 scripts/repair_v1_human_dogfood.py
+      - name: Install UI dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Test UI state
+        run: npm run test:ui
+      - name: Bundle UI
+        run: npm run build:ui
+      - name: Format Zig
+        run: zig fmt src build.zig
+      - name: Test core
+        run: zig build test-core -Dheadless-only=true
+      - name: Test ReleaseSafe integration
+        run: zig build test-integration -Doptimize=ReleaseSafe
+      - name: Commit clean repair
+        shell: bash
+        run: |
+          git config user.name "Chris Birster"
+          git config user.email "christopher.birster@gmail.com"
+          git add ui/src/bundle.ts src/tui.zig
+          git rm scripts/repair_v1_human_dogfood.py .github/workflows/repair-v1-human-dogfood.yml
+          git commit -m "fix: honor real terminal input and popup lifecycle"
+          git push origin HEAD:feature/v1.0-daily-driver
