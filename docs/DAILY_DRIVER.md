@@ -7,6 +7,8 @@ v1.0 is the point where Zim stops proving editor architecture and starts proving
 Before calling a commit a Zim 1.0 release candidate, use that exact build for real work and confirm:
 
 - [ ] open the Zim repository as the primary editor for a sustained work session
+- [ ] on a real macOS terminal, open a file from the dashboard/tree and confirm the dashboard or an empty `PLUGIN` overlay does not remain painted over the editor
+- [ ] on a real macOS terminal, confirm `:` visibly enters Ex mode and `:q`, `:q!`, and `:w` work after dashboard/tree handoffs
 - [ ] edit/save multiple Zig files and navigate with normal modal grammar
 - [ ] use splits/tabs and restart Zim; confirm the workspace restores correctly
 - [ ] leave an unsaved buffer, terminate Zim abnormally, then validate `:RecoveryRestore`
