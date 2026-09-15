@@ -98,25 +98,45 @@ jobs:
           node-version: 22
 
       - name: Install UI dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
+
+      - name: Test Solid/Hondo UI state
+        run: npm run test:ui
 
       - name: Bundle Solid/Hondo UI
         run: npm run build:ui
 
-      - name: Build Zim
-        run: zig build
+      - name: Build ReleaseSafe Zim
+        run: zig build -Doptimize=ReleaseSafe
 
-      - name: Install Python for RPC smoke
+      - name: Install Python for RPC smoke, benchmarks, and packaging
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Test macOS ReleaseSafe interactive startup
+        if: runner.os == 'macOS'
+        timeout-minutes: 1
+        run: python scripts/interactive_smoke.py ./zig-out/bin/zim
+
+      - name: Release packaging dry run
+        run: python scripts/package_release.py
+
+      - name: Daily Driver performance gate
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            python scripts/benchmark.py ./zig-out/bin/zim.exe
+          else
+            python scripts/benchmark.py ./zig-out/bin/zim
+          fi
 
       - name: Test MessagePack-RPC process boundary
         timeout-minutes: 2
         run: python scripts/rpc-smoke.py
 
-      - name: Test Hondo integration
-        run: zig build test-integration
+      - name: Test Hondo integration in ReleaseSafe
+        run: zig build test-integration -Doptimize=ReleaseSafe
 
-      - name: Test full suite
-        run: zig build test
+      - name: Test full ReleaseSafe suite
+        run: zig build test -Doptimize=ReleaseSafe

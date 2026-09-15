@@ -263,17 +263,21 @@ Validation evidence: final exact PR head `54c14012176f2865b1f0bc6fb348707dc38daa
 
 ## v1.0.0 — Daily Driver
 
+**Status: release-candidate implementation complete; sustained dogfood and final release validation remain.**
+
 **Goal:** make Zim trustworthy as a primary Neovim-class terminal editor.
 
-- [ ] stable modal grammar and public API policy
-- [ ] robust crash/error recovery
-- [ ] sessions/recovery strategy
-- [ ] colorschemes/highlight configuration
-- [ ] built-in help/documentation
-- [ ] packaging/installers
-- [ ] startup and large-file benchmarks
-- [ ] macOS/Linux/Windows terminal hardening
-- [ ] SSH/tmux behavior testing
+- [x] stable modal grammar and public API policy
+- [x] robust crash/error recovery and extension callback isolation
+- [x] atomic sessions/recovery strategy for complete workspace state and unsaved buffers
+- [x] colorschemes/highlight configuration wired into native rendering
+- [x] built-in searchable help/documentation and health/error diagnostics
+- [x] macOS/Linux/Windows release packaging plus checksum-verifying installers
+- [x] startup and large-file benchmark budgets enforced in CI
+- [x] macOS/Linux/Windows terminal hardening
+- [x] SSH/tmux compatibility modeling and diagnostics
 - [ ] sustained real-project dogfooding
+
+The v1 release gate requires the exact candidate head to pass Ubuntu/macOS/Windows CI, followed by the same gate on the exact squash-merged `main` commit. The tag is cut only from that validated `main` commit.
 
 **Exit condition:** Zim can realistically be used as a primary terminal programmer's editor with documented compatibility and extension guarantees.

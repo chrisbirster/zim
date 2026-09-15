@@ -45,7 +45,7 @@ pub const Model = struct {
         }
         self.kind = kind;
         self.selected = 0;
-        self.open = true;
+        self.open = labels.len != 0;
         self.revision += 1;
     }
 
@@ -88,4 +88,12 @@ test "native popup model owns selection independent of Hondo" {
     try std.testing.expectEqualStrings("one", model.selectedLabel().?);
     model.close();
     try std.testing.expect(!model.open);
+}
+
+test "empty popup stays closed" {
+    var model = Model.init(std.testing.allocator);
+    defer model.deinit();
+    try model.show(.plugin, "Actions", &.{});
+    try std.testing.expect(!model.open);
+    try std.testing.expectEqual(@as(usize, 0), model.items.items.len);
 }

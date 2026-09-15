@@ -96,7 +96,10 @@ pub const Registry = struct {
             .args = args,
             .user_data = user_data,
         };
-        try callback(&context);
+        callback(&context) catch |err| {
+            reportCallbackError(editor, name, err);
+            return;
+        };
     }
 
     pub fn find(self: *const Registry, name: []const u8) ?*const Entry {
@@ -127,6 +130,18 @@ pub const Registry = struct {
     }
 };
 
+fn reportCallbackError(editor: *editor_module.Editor, name: []const u8, err: anyerror) void {
+    const rendered = std.fmt.bufPrint(
+        &editor.status_buffer,
+        "command {s} failed: {s}",
+        .{ name, @errorName(err) },
+    ) catch {
+        editor.status_len = 0;
+        return;
+    };
+    editor.status_len = rendered.len;
+}
+
 fn validName(name: []const u8) bool {
     if (name.len == 0) return false;
     for (name, 0..) |byte, index| {
@@ -151,6 +166,11 @@ fn recordCommand(context: *Context) !void {
     @memcpy(state.last_args[0..state.last_args_len], context.args[0..state.last_args_len]);
 }
 
+fn failingCommand(context: *Context) !void {
+    _ = context;
+    return error.IntentionalCommandFailure;
+}
+
 test "commands register execute discover and delete" {
     var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
     defer editor.deinit();
@@ -168,4 +188,15 @@ test "commands register execute discover and delete" {
     try std.testing.expectError(error.CommandAlreadyExists, registry.create("Format", "duplicate", recordCommand, &state));
     try std.testing.expect(registry.delete("Format"));
     try std.testing.expectError(error.UnknownCommand, registry.execute(&editor, "Format", ""));
+}
+
+test "registered command failures are isolated from the editor process" {
+    var editor = try editor_module.Editor.init(std.testing.allocator, std.testing.io, null);
+    defer editor.deinit();
+    var registry = Registry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    _ = try registry.create("Explode", "test failure isolation", failingCommand, null);
+    try registry.execute(&editor, "Explode", "");
+    try std.testing.expectEqualStrings("command Explode failed: IntentionalCommandFailure", editor.status());
 }

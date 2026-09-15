@@ -50,29 +50,26 @@ Lua is the primary configuration and in-process plugin language. External plugin
 
 ## Current status
 
-Zim is a real modal editor under active pre-1.0 development. The current development version is **`v0.9.0 — MessagePack-RPC + Remote Plugins`**.
+The current development version is **`v1.0.0 — Daily Driver`**. v1 turns the editor architecture completed through v0.9 into a compatibility-managed, recoverable, installable primary-editor candidate.
 
-`v0.9.0` exposes the public editor API to trusted local external processes while preserving native ownership of editor semantics:
+Daily Driver adds:
 
-- bounded MessagePack codec with incremental stream framing
-- MessagePack-RPC request/response/notification protocol
-- explicit RPC protocol and public API version negotiation
-- capability discovery
-- headless stdio RPC
-- Unix-domain socket transport on Linux/macOS
-- Windows named-pipe transport
-- remote commands, keymaps, and autocommands backed by the existing native registries
-- stable remote registration IDs with disconnect cleanup
-- remote command/autocommand callback notifications
-- buffer access and public command execution over RPC
-- nonblocking interactive RPC polling on Zim's editor thread
-- process-boundary CI smokes on Ubuntu, macOS, and Windows
+- atomic crash-recovery snapshots for unsaved buffers and complete workspace state
+- clean session persistence for project, buffers, windows, tabs, splits, cursors, and scroll positions
+- isolated command, autocommand, Lua, plugin, RPC, LSP, and external-tool failure boundaries
+- bounded user-visible error history through `:Errors` and runtime diagnostics through `:Checkhealth`
+- built-in searchable help topics with `:Help`
+- native `zim`, `mono`, and `ember` colorschemes plus user highlight overrides
+- compatibility-managed public/plugin/RPC API metadata for the 1.x line
+- reproducible macOS/Linux/Windows release archives and checksum-verifying installers
+- bounded startup and 5 MiB large-file performance gates in three-platform CI
+- terminal compatibility diagnostics for Kitty, WezTerm, Alacritty, Terminal.app, Windows Terminal, SSH, and tmux contexts
 
 ```text
-ZIM 0.9.0 — YOUR NEW CODE OVERLORD
+ZIM 1.0.0 — YOUR NEW CODE OVERLORD
 ```
 
-See [MessagePack-RPC + Remote Plugins](docs/RPC_AND_REMOTE_PLUGINS.md) for the v0.9 wire protocol, transports, callbacks, lifecycle, and security model.
+See [Daily Driver](docs/DAILY_DRIVER.md), [API Stability](docs/API_STABILITY.md), [Recovery and Sessions](docs/RECOVERY_AND_SESSIONS.md), [Install](docs/INSTALL.md), and [Terminal Compatibility](docs/TERMINAL_COMPATIBILITY.md) for the v1 contract and release gates.
 
 ## MessagePack-RPC + Remote Plugins
 
@@ -98,9 +95,9 @@ On Windows, `--rpc-listen zim-main` serves `\\.\pipe\zim-main` instead of a Unix
 
 Clients first negotiate protocol/API metadata with `zim.handshake`, then can discover capabilities and call the supported public RPC methods. Remote commands and autocommands receive callback notifications; registrations are scoped to the connection and cleaned up when that connection is discarded.
 
-RPC is local-only in v0.9. There is no TCP listener, RPC authentication layer, or network plugin registry. Treat connected remote processes as trusted local extensions.
+RPC remains local-only in v1.0. There is no TCP listener, RPC authentication layer, or network plugin registry. Treat connected remote processes as trusted local extensions.
 
-See [MessagePack-RPC + Remote Plugins](docs/RPC_AND_REMOTE_PLUGINS.md) for the complete v0.9 contract.
+See [MessagePack-RPC + Remote Plugins](docs/RPC_AND_REMOTE_PLUGINS.md) for the complete RPC contract and [API Stability](docs/API_STABILITY.md) for the 1.x compatibility policy.
 
 ## Jobs + Terminal
 
@@ -324,6 +321,9 @@ zim.opt.number = true
 zim.opt.tabstop = 4
 zim.opt.expandtab = true
 
+zim.colorscheme('ember')
+zim.highlight.set('Keyword', { fg = 13, bold = true })
+
 zim.keymap.set('normal', 'z', 'i')
 
 zim.command.create('Hello', function(args)
@@ -363,7 +363,7 @@ The current keymap bridge intentionally starts small: `lhs` and `rhs` are single
 - Zig 0.16.0
 - Node.js for the bundled Solid/Hondo UI build
 - Git for `PackAdd`, `PackUpdate`, and managed plugin revisions
-- Python 3 for the CI RPC process-boundary smoke harness
+- Python 3 for RPC process-boundary smoke tests, release packaging, and Daily Driver performance gates
 
 Lua is embedded; a system Lua installation is not required.
 
@@ -413,10 +413,15 @@ zig fmt src build.zig
 zig build test
 ```
 
-CI runs the pure Zig core gate, job lifecycle/streaming/cancellation tests, PTY and terminal session/screen/controller tests, Pins persistence/Lua tests, extmark/edit-tracking and plugin UI tests, the real Git-backed plugin package lifecycle test, MessagePack-RPC host/protocol tests, external-process stdio + local-IPC RPC smokes, Hondo integration tests including native Pin and popup/completion navigation, the full suite, and the pinned real-ZLS smoke where configured.
+CI runs the pure Zig core gate, recovery/session and extension-failure isolation tests, job lifecycle/streaming/cancellation tests, PTY and terminal session/screen/controller tests, Pins persistence/Lua tests, extmark/edit-tracking/theme/plugin UI tests, the real Git-backed plugin package lifecycle test, MessagePack-RPC host/protocol tests, external-process stdio + local-IPC RPC smokes, bounded startup/large-file performance gates, Hondo integration tests including native Pin and popup/completion navigation, the full suite, and the pinned real-ZLS smoke where configured.
 
 ## Read next
 
+- [Daily Driver](docs/DAILY_DRIVER.md)
+- [API Stability](docs/API_STABILITY.md)
+- [Recovery and Sessions](docs/RECOVERY_AND_SESSIONS.md)
+- [Install / Update](docs/INSTALL.md)
+- [Terminal Compatibility](docs/TERMINAL_COMPATIBILITY.md)
 - [MessagePack-RPC + Remote Plugins](docs/RPC_AND_REMOTE_PLUGINS.md)
 - [Jobs + Terminal](docs/JOBS_AND_TERMINAL.md)
 - [Extmarks, Diagnostics, and Plugin UI](docs/EXTMARKS_AND_PLUGIN_UI.md)

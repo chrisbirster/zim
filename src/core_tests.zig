@@ -1,6 +1,7 @@
 const builtin = @import("builtin");
 
 test {
+    _ = @import("build_info.zig");
     _ = @import("buffer.zig");
     _ = @import("workspace.zig");
     _ = @import("cli.zig");
@@ -9,6 +10,10 @@ test {
     _ = @import("extmarks.zig");
     _ = @import("plugin_ui.zig");
     _ = @import("jobs.zig");
+    _ = @import("session_recovery.zig");
+    _ = @import("theme.zig");
+    _ = @import("terminal_compat.zig");
+    _ = @import("daily_driver.zig");
 
     // ConPTY integration is exercised by dedicated direct `zig test` CI steps
     // on Windows. Running native PTY children from Zig's aggregate build test

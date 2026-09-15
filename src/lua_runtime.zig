@@ -201,7 +201,7 @@ pub const Runtime = struct {
         };
 
         self.lua.createTable(0, 2);
-        _ = self.lua.pushString("0.7.0");
+        _ = self.lua.pushString("1.0.0");
         self.lua.setField(-2, "version");
         self.lua.newLib(&native_fns);
         self.lua.setField(-2, "_native");
@@ -788,7 +788,7 @@ test "embedded Lua exposes options keymaps commands and autocommands" {
     defer runtime.deinit();
 
     try runtime.eval(
-        \\assert(zim.version == '0.7.0')
+        \\assert(zim.version == '1.0.0')
         \\zim.opt.number = true
         \\zim.opt.tabstop = 8
         \\zim.keymap.set('normal', 'z', 'i')

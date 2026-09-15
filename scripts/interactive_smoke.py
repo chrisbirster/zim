@@ -1,0 +1,358 @@
+#!/usr/bin/env python3
+"""Exercise Zim's release binary through a real PTY.
+
+This follows the human dogfood path that exposed the v1 TUI focus bugs: start
+in a project, toggle the explorer, expand a directory, open a file, then prove
+representative Vim motions/operators by writing their results to disk. Headless
+Editor.handleKey() tests are not sufficient for this contract because focus and
+terminal control-byte routing can diverge between Hondo native views.
+"""
+
+from __future__ import annotations
+
+import fcntl
+import os
+import pty
+import select
+import signal
+import struct
+import sys
+import tempfile
+import termios
+import time
+from pathlib import Path
+
+
+KEY_DELAY = 0.015
+
+
+def reap(pid: int) -> None:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        try:
+            finished, _ = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if finished == pid:
+            return
+        time.sleep(0.05)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        os.waitpid(pid, 0)
+    except ChildProcessError:
+        pass
+
+
+def wait_status(pid: int) -> int | None:
+    finished, status = os.waitpid(pid, os.WNOHANG)
+    return status if finished == pid else None
+
+
+def describe_status(status: int) -> str:
+    if os.WIFSIGNALED(status):
+        return f"terminated by signal {os.WTERMSIG(status)}"
+    if os.WIFEXITED(status):
+        return f"exited with status {os.WEXITSTATUS(status)}"
+    return f"ended with wait status {status}"
+
+
+def drain(master: int, duration: float) -> bytes:
+    deadline = time.monotonic() + duration
+    chunks: list[bytes] = []
+    while time.monotonic() < deadline:
+        readable, _, _ = select.select([master], [], [], 0.05)
+        if not readable:
+            continue
+        try:
+            chunk = os.read(master, 8192)
+        except OSError:
+            break
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def wait_for_exit(pid: int, timeout: float) -> int | None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = wait_status(pid)
+        if status is not None:
+            return status
+        time.sleep(0.05)
+    return None
+
+
+def send(master: int, data: bytes, settle: float = 0.35) -> bytes:
+    # Hosted macOS runners can render more slowly than they consume a single
+    # os.write() burst. Pace bytes like real typing so mode transitions and the
+    # Hondo/native-view handoff are observed in-order rather than merely queued.
+    for byte in data:
+        os.write(master, bytes((byte,)))
+        time.sleep(KEY_DELAY)
+    return drain(master, settle)
+
+
+def wait_for_text(master: int, path: Path, expected: str, timeout: float = 2.0) -> str:
+    deadline = time.monotonic() + timeout
+    actual = path.read_text(encoding="utf-8")
+    while actual != expected and time.monotonic() < deadline:
+        # Keep consuming renderer output while the editor finishes processing
+        # queued input; otherwise a busy PTY can back-pressure the child.
+        drain(master, 0.05)
+        actual = path.read_text(encoding="utf-8")
+    return actual
+
+
+def write_and_expect(master: int, path: Path, expected: str, label: str) -> bool:
+    send(master, b":w\r", 0.25)
+    actual = wait_for_text(master, path, expected)
+    if actual != expected:
+        print(
+            f"interactive-smoke: {label} wrote unexpected text\n"
+            f"expected={expected!r}\nactual={actual!r}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def undo_and_restore(master: int, path: Path, expected: str, label: str) -> bool:
+    send(master, b"u")
+    return write_and_expect(master, path, expected, f"undo after {label}")
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        print("usage: interactive_smoke.py /path/to/zim", file=sys.stderr)
+        return 2
+
+    executable = os.path.abspath(sys.argv[1])
+    with tempfile.TemporaryDirectory(prefix="zim-interactive-") as project:
+        src = Path(project, "src")
+        src.mkdir()
+        initial_text = (
+            "alpha beta gamma\n"
+            "two words here\n"
+            "three words here\n"
+            "four words here\n"
+            "five words here\n"
+            "six words here\n"
+            "seven words here\n"
+            "eight words here\n"
+            "nine words here\n"
+            "ten words here\n"
+        )
+        sample = Path(src, "sample.txt")
+        sample.write_text(initial_text, encoding="utf-8")
+        lines = initial_text.splitlines(keepends=True)
+
+        pid, master = pty.fork()
+        if pid == 0:
+            # pty.fork() inherits an unspecified size on hosted runners. Give Zim
+            # the same useful geometry a real terminal would provide so centered
+            # dashboard/popup assertions test rendering rather than zero-size PTYs.
+            fcntl.ioctl(
+                sys.stdout.fileno(),
+                termios.TIOCSWINSZ,
+                struct.pack("HHHH", 30, 120, 0, 0),
+            )
+            env = os.environ.copy()
+            env.setdefault("TERM", "xterm-256color")
+            os.chdir(project)
+            os.execve(executable, [executable], env)
+
+        reaped = False
+        try:
+            startup = drain(master, 3.0)
+            status = wait_status(pid)
+            if status is not None:
+                reaped = True
+                print(
+                    f"interactive-smoke: process died during startup: {describe_status(status)}",
+                    file=sys.stderr,
+                )
+                return 1
+            if not startup:
+                print("interactive-smoke: process stayed alive but produced no terminal frame", file=sys.stderr)
+                return 1
+            if b"ZIM v1.0.0" not in startup or b":checkhealth" not in startup:
+                print("interactive-smoke: v1 dashboard contract was not rendered", file=sys.stderr)
+                return 1
+
+            # The lowercase command advertised by the dashboard must execute from
+            # the initial editor-facing experience, then Esc must close its popup.
+            health_frame = send(master, b":checkhealth\r", 0.5)
+            if b"Checkhealth" not in health_frame and b"Zim 1.0.0" not in health_frame:
+                print("interactive-smoke: lowercase :checkhealth did not execute", file=sys.stderr)
+                return 1
+            send(master, b"\x1b")
+
+            tree_frame = send(master, b" e")
+            if b"FILES" not in tree_frame:
+                print("interactive-smoke: <leader>e did not render the project tree", file=sys.stderr)
+                return 1
+
+            # Prove the leader binding is a true toggle from tree focus. Hondo's
+            # renderer emits cell diffs, so closing the tree does not have to
+            # re-emit the dashboard text as one contiguous byte string. Instead,
+            # close once and require the next toggle to render FILES again. If the
+            # first toggle did not close, the second would close and this fails.
+            send(master, b" e")
+            reopened = send(master, b" e")
+            if b"FILES" not in reopened:
+                print("interactive-smoke: <leader>e did not close and reopen from tree focus", file=sys.stderr)
+                return 1
+
+            # The only root entry is src/. Enter expands it; h collapses the same
+            # node and l expands it again. j + Enter then opens the nested file.
+            expanded = send(master, b"\r")
+            if b"sample.txt" not in expanded:
+                print("interactive-smoke: Enter did not expand a project-tree directory", file=sys.stderr)
+                return 1
+            send(master, b"h")
+            reexpanded = send(master, b"l")
+            if b"sample.txt" not in reexpanded:
+                print("interactive-smoke: h/l did not collapse and re-expand the directory", file=sys.stderr)
+                return 1
+            # Open the nested file. Do not assert that its first line is emitted
+            # contiguously in this renderer diff; the disk-backed edit/write proof below
+            # verifies that this exact file became the active editor buffer.
+            send(master, b"j\r", 0.5)
+
+            # Ex entry must work even when the explorer owns the keyboard.
+            # Use an observable disk side effect instead of renderer bytes:
+            # modify the buffer, reopen the tree, execute :w from tree focus,
+            # and verify that the native editor command actually wrote the file.
+            send(master, b"ggciw")
+            send(master, b"TREEWRITE")
+            send(master, b"\x1b")
+            tree_write = "TREEWRITE beta gamma\n" + "".join(lines[1:])
+            reopened_for_write = send(master, b" e")
+            if b"FILES" not in reopened_for_write:
+                print("interactive-smoke: could not reopen tree for Ex write proof", file=sys.stderr)
+                return 1
+            send(master, b":w\r", 0.25)
+            if wait_for_text(master, sample, tree_write) != tree_write:
+                print("interactive-smoke: :w did not execute from tree focus", file=sys.stderr)
+                return 1
+            send(master, b" e")
+            if not undo_and_restore(master, sample, initial_text, "tree-focus :w"):
+                return 1
+
+            # G with an explicit count must distinguish 1G from bare G. Pair it
+            # with dd so the cursor destination is verified through disk contents.
+            send(master, b"G1Gdd")
+            no_first = "".join(lines[1:])
+            if not write_and_expect(master, sample, no_first, "G1Gdd"):
+                return 1
+            if not undo_and_restore(master, sample, initial_text, "G1Gdd"):
+                return 1
+
+            # Operator count before the motion and before the operator are Vim
+            # equivalent: d2w and 2dw both remove two words plus following space.
+            two_words_removed = "gamma\n" + "".join(lines[1:])
+            send(master, b"ggd2w")
+            if not write_and_expect(master, sample, two_words_removed, "d2w"):
+                return 1
+            if not undo_and_restore(master, sample, initial_text, "d2w"):
+                return 1
+
+            send(master, b"gg2dw")
+            if not write_and_expect(master, sample, two_words_removed, "2dw"):
+                return 1
+            if not undo_and_restore(master, sample, initial_text, "2dw"):
+                return 1
+
+            send(master, b"ggdd")
+            if not write_and_expect(master, sample, no_first, "dd"):
+                return 1
+            if not undo_and_restore(master, sample, initial_text, "dd"):
+                return 1
+
+            # ciw must keep one undo group across operator -> insert mode. Keep
+            # the mode transitions in separate PTY chunks so the test does not
+            # race a hosted runner's render loop.
+            send(master, b"ggciw")
+            send(master, b"OMEGA")
+            send(master, b"\x1b")
+            changed_word = "OMEGA beta gamma\n" + "".join(lines[1:])
+            if not write_and_expect(master, sample, changed_word, "ciw"):
+                return 1
+            if not undo_and_restore(master, sample, initial_text, "ciw"):
+                return 1
+
+            # Counted absolute G plus a doubled operator.
+            send(master, b"gg3Gdd")
+            no_third = "".join(lines[:2] + lines[3:])
+            if not write_and_expect(master, sample, no_third, "3Gdd"):
+                return 1
+            if not undo_and_restore(master, sample, initial_text, "3Gdd"):
+                return 1
+
+            # Absolute line motions must compose linewise with operators.
+            send(master, b"2GdG")
+            if not write_and_expect(master, sample, lines[0], "dG"):
+                return 1
+            if not undo_and_restore(master, sample, initial_text, "dG"):
+                return 1
+
+            send(master, b"3Gdgg")
+            after_dgg = "".join(lines[3:])
+            if not write_and_expect(master, sample, after_dgg, "dgg"):
+                return 1
+            if not undo_and_restore(master, sample, initial_text, "dgg"):
+                return 1
+
+            # Search creates a jump. Ctrl-O goes back and a literal terminal Tab
+            # must behave as Vim Ctrl-I, returning to the search destination.
+            send(master, b"gg/three\r")
+            send(master, b"\x0f")
+            send(master, b"\tdd")
+            if not write_and_expect(master, sample, no_third, "Ctrl-O/Tab jump + dd"):
+                return 1
+            if not undo_and_restore(master, sample, initial_text, "Ctrl-O/Tab jump + dd"):
+                return 1
+
+            # Exercise command-line cancellation before the final quit. Separate
+            # Escape and Enter from the surrounding command text so the PTY waits
+            # for each mode transition instead of flooding the editor event loop.
+            send(master, b":noop\x7f")
+            send(master, b"\x1b", 0.5)
+            send(master, b":q!", 0.25)
+            send(master, b"\r", 0.25)
+
+            status = wait_for_exit(pid, 3.0)
+            if status is None:
+                print("interactive-smoke: :q! did not exit after project-tree handoff", file=sys.stderr)
+                return 1
+            reaped = True
+            if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
+                print(
+                    f"interactive-smoke: :q! ended unexpectedly: {describe_status(status)}",
+                    file=sys.stderr,
+                )
+                return 1
+
+            print(
+                "interactive-smoke: tree focus + counted motions + operator parity + native Ex :q! passed"
+            )
+            return 0
+        finally:
+            if not reaped:
+                reap(pid)
+            try:
+                os.close(master)
+            except OSError:
+                pass
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
