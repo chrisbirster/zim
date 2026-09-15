@@ -273,7 +273,11 @@ const dashboard = Popup({
     return Math.max(3, Math.floor((terminalHeight() - 20) / 2));
   },
   zIndex: 10,
-  style: { width: 64, paddingX: 2, background: '#080b10' },
+  get style() {
+    return dashboardVisible()
+      ? { width: 64, paddingX: 2, background: '#080b10' }
+      : { width: 0, height: 0, paddingX: 0, background: '#080b10' };
+  },
   children: Column({
     children: [
       Text({ style: { bold: true, foreground: 'bright-magenta' }, children: '        ███████╗██╗███╗   ███╗' }),
@@ -307,7 +311,11 @@ const pinSwitcher = Popup({
     return Math.max(1, Math.floor((terminalHeight() - Math.min(16, pins().length + 5)) / 2));
   },
   zIndex: 20,
-  style: { width: 62, paddingX: 1, background: '#20242c' },
+  get style() {
+    return pinSwitcherOpen()
+      ? { width: 62, paddingX: 1, background: '#20242c' }
+      : { width: 0, height: 0, paddingX: 0, background: '#20242c' };
+  },
   children: Column({
     children: [
       Text({ style: { bold: true, foreground: 'bright-magenta' }, children: 'HARPOON' }),
@@ -339,7 +347,11 @@ const nativePopup = Popup({
     return Math.max(1, Math.floor((terminalHeight() - Math.min(16, nativePopupItems().length + 5)) / 2));
   },
   zIndex: 30,
-  style: { width: 58, paddingX: 1, background: '#20242c' },
+  get style() {
+    return nativePopupOpen()
+      ? { width: 58, paddingX: 1, background: '#20242c' }
+      : { width: 0, height: 0, paddingX: 0, background: '#20242c' };
+  },
   children: Column({
     children: [
       Text({ style: { bold: true, foreground: 'bright-cyan' }, children: () => nativePopupTitle() || nativePopupKind().toUpperCase() }),
@@ -409,9 +421,9 @@ const disposeRender = render(() =>
   Column({
     style: { minWidth: 1, minHeight: 1, background: '#080b10' },
     children: [
-      () => (dashboardVisible() ? dashboard : null),
-      () => (nativePopupOpen() ? nativePopup : null),
-      () => (pinSwitcherOpen() ? pinSwitcher : null),
+      dashboard,
+      nativePopup,
+      pinSwitcher,
       Row({
         style: { height: 1, background: '#17172b' },
         children: [

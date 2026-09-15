@@ -14,6 +14,7 @@ const fallback_width = 80;
 const fallback_height = 24;
 const resize_poll_ms = 50;
 const sequence_wait_ms = 10;
+const keyboard_protocol_reset = "\x1b[<u";
 
 const UiAction = enum {
     toggle_tree,
@@ -107,6 +108,7 @@ const TuiApp = struct {
         try self.syncFocus();
         const ex_entry = isExEntryEvent(incoming) and self.editor.mode == .normal;
         const before_buffer_id = self.editor.currentBufferConst().id;
+        const before_path_hash = optionalPathHash(self.editor.currentPath());
         const before = api_observer.capture(self.editor);
 
         // Ex entry is a global TUI action. Do not rely on Hondo focus to route
@@ -147,7 +149,9 @@ const TuiApp = struct {
                 else => false,
             };
             if (tree_handled) {
-                if (before_buffer_id != self.editor.currentBufferConst().id) {
+                if (before_buffer_id != self.editor.currentBufferConst().id or
+                    before_path_hash != optionalPathHash(self.editor.currentPath()))
+                {
                     self.tree_open = false;
                     try self.runtime.eval(
                         "globalThis.__zimCloseTree?.();",
@@ -184,7 +188,9 @@ const TuiApp = struct {
             grid.height,
         );
         try self.applyPendingUiAction();
-        if (before_buffer_id != self.editor.currentBufferConst().id) {
+        if (before_buffer_id != self.editor.currentBufferConst().id or
+            before_path_hash != optionalPathHash(self.editor.currentPath()))
+        {
             self.tree_open = false;
             try self.runtime.eval(
                 "globalThis.__zimCloseTree?.();",
@@ -442,6 +448,34 @@ fn terminalContentHeight(height: usize) usize {
     return @max(@as(usize, 1), height -| 1);
 }
 
+fn v1InputFeaturesBeginSequence(allocator: std.mem.Allocator) ![]u8 {
+    return std.mem.concat(allocator, u8, &.{
+        keyboard_protocol_reset,
+        hondo.terminal.control.enable_mouse_buttons,
+        hondo.terminal.control.enable_sgr_mouse,
+        hondo.terminal.control.enable_focus_events,
+    });
+}
+
+fn v1InputFeaturesRestoreSequence(allocator: std.mem.Allocator) ![]u8 {
+    return std.mem.concat(allocator, u8, &.{
+        keyboard_protocol_reset,
+        hondo.terminal.control.disable_focus_events,
+        hondo.terminal.control.disable_sgr_mouse,
+        hondo.terminal.control.disable_mouse_buttons,
+    });
+}
+
+fn optionalPathHash(path: ?[]const u8) u64 {
+    const value = path orelse return 0;
+    var hash: u64 = 0xcbf29ce484222325;
+    for (value) |byte| {
+        hash ^= byte;
+        hash *%= 0x100000001b3;
+    }
+    return hash;
+}
+
 fn notifyWorkspaceSize(
     runtime: *hondo.runtime.Runtime,
     registry: *hondo.native_view.Registry,
@@ -483,7 +517,7 @@ pub fn run(
     defer init.gpa.free(restore);
     defer terminal_io.writeAll(terminal_io.stdout_fd, restore) catch {};
 
-    const input_restore = try hondo.terminal.control.inputFeaturesRestoreSequence(init.gpa);
+    const input_restore = try v1InputFeaturesRestoreSequence(init.gpa);
     defer init.gpa.free(input_restore);
     defer terminal_io.writeAll(terminal_io.stdout_fd, input_restore) catch {};
 
@@ -491,7 +525,7 @@ pub fn run(
     defer init.gpa.free(begin);
     try terminal_io.writeAll(terminal_io.stdout_fd, begin);
 
-    const input_begin = try hondo.terminal.control.inputFeaturesBeginSequence(init.gpa);
+    const input_begin = try v1InputFeaturesBeginSequence(init.gpa);
     defer init.gpa.free(input_begin);
     try terminal_io.writeAll(terminal_io.stdout_fd, input_begin);
 
@@ -546,6 +580,7 @@ fn readTerminalEvent(fd: c_int) !?hondo.terminal.input.Event {
         if (bytes[1] != '[') return .{ .key = .escape };
         while (len < bytes.len) {
             if (len >= 3) {
+                if (decodeCsiUEvent(bytes[0..len])) |event| return event;
                 if (hondo.terminal.input.decode(bytes[0..len])) |decoded| {
                     if (decoded.consumed == len) return decoded.event;
                 }
@@ -565,6 +600,45 @@ fn readTerminalEvent(fd: c_int) !?hondo.terminal.input.Event {
         decoded.event
     else
         .{ .key = .{ .codepoint = 0xfffd } };
+}
+
+fn decodeCsiUEvent(bytes: []const u8) ?hondo.terminal.input.Event {
+    if (bytes.len < 4 or bytes[0] != 0x1b or bytes[1] != '[' or bytes[bytes.len - 1] != 'u') return null;
+    const body = bytes[2 .. bytes.len - 1];
+    var fields = std.mem.splitScalar(u8, body, ';');
+    const key_field = fields.next() orelse return null;
+    const modifier_field = fields.next();
+    if (fields.next() != null) return null;
+
+    var key_parts = std.mem.splitScalar(u8, key_field, ':');
+    const base_text = key_parts.next() orelse return null;
+    const base_u32 = std.fmt.parseInt(u32, base_text, 10) catch return null;
+    const shifted_u32 = if (key_parts.next()) |text|
+        std.fmt.parseInt(u32, text, 10) catch null
+    else
+        null;
+
+    var encoded_modifiers: u16 = 1;
+    if (modifier_field) |raw| {
+        var modifier_parts = std.mem.splitScalar(u8, raw, ':');
+        encoded_modifiers = std.fmt.parseInt(u16, modifier_parts.next() orelse return null, 10) catch return null;
+        if (encoded_modifiers == 0) return null;
+    }
+    const modifiers = encoded_modifiers - 1;
+    const shift = modifiers & 1 != 0;
+    const ctrl = modifiers & 4 != 0;
+    const selected_u32 = if (shift) shifted_u32 orelse base_u32 else base_u32;
+    const selected = std.math.cast(u21, selected_u32) orelse return null;
+
+    if (ctrl and selected <= 0x7f) {
+        const lower: u21 = if (selected >= 'A' and selected <= 'Z') selected + ('a' - 'A') else selected;
+        if (lower >= 'a' and lower <= 'z') {
+            const control: u21 = lower - 'a' + 1;
+            if (control == 0x03) return .{ .key = .ctrl_c };
+            return .{ .key = .{ .codepoint = control } };
+        }
+    }
+    return .{ .key = .{ .codepoint = selected } };
 }
 
 fn isExEntryEvent(event: hondo.terminal.input.Event) bool {
@@ -608,6 +682,35 @@ fn sceneContainsText(scene: *hondo.scene.Scene, expected: []const u8) bool {
 fn sendLeader(app: *TuiApp, key: u21) !void {
     _ = try app.dispatch(.{ .key = .{ .codepoint = default_leader.leader } });
     _ = try app.dispatch(.{ .key = .{ .codepoint = key } });
+}
+
+test "v1 input protocol reset and CSI-u fallback preserve Ex punctuation" {
+    const begin = try v1InputFeaturesBeginSequence(std.testing.allocator);
+    defer std.testing.allocator.free(begin);
+    const restore = try v1InputFeaturesRestoreSequence(std.testing.allocator);
+    defer std.testing.allocator.free(restore);
+
+    try std.testing.expect(std.mem.indexOf(u8, begin, keyboard_protocol_reset) != null);
+    try std.testing.expect(std.mem.indexOf(u8, begin, "\x1b[>1u") == null);
+    try std.testing.expect(std.mem.indexOf(u8, restore, keyboard_protocol_reset) != null);
+
+    const shifted_colon = decodeCsiUEvent("\x1b[58;2u") orelse return error.TestUnexpectedResult;
+    switch (shifted_colon) {
+        .key => |key| switch (key) {
+            .codepoint => |cp| try std.testing.expectEqual(@as(u21, ':'), cp),
+            else => return error.TestUnexpectedResult,
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    const alternate_colon = decodeCsiUEvent("\x1b[59:58;2u") orelse return error.TestUnexpectedResult;
+    switch (alternate_colon) {
+        .key => |key| switch (key) {
+            .codepoint => |cp| try std.testing.expectEqual(@as(u21, ':'), cp),
+            else => return error.TestUnexpectedResult,
+        },
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "Hondo chrome reacts while editor grammar stays native" {
